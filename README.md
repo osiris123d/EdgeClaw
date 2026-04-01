@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Cloudflare-Native Conversational Agent Prototype
 
 A production-ready, serverless conversational task system on Cloudflare Workers.
@@ -338,3 +339,7 @@ Planned:
 [Insert your license here, e.g., MIT, Apache 2.0]
 
 Built with Cloudflare Workers, Durable Objects, R2, and TypeScript.
+=======
+# EdgeClaw
+A Cloudflare-native port of OpenClaw, running on Cloudflare’s Agents SDK, designed for low-latency, edge-native automation.
+>>>>>>> e0db38d0d600464c12eb809c3d7c6b4e26c814b5
