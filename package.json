@@ -1,0 +1,30 @@
+{
+  "name": "cloudflare-agent",
+  "version": "0.1.0",
+  "description": "Enterprise-style agent system on Cloudflare Workers, inspired by OpenClaw patterns",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "deploy:prod": "wrangler deploy --env production",
+    "build": "tsc",
+    "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@cloudflare/workers-types": "^4.20241203.0"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "^10.4.0",
+    "@types/node": "^22.5.0",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.2",
+    "wrangler": "^4.79.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

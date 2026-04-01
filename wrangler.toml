@@ -1,0 +1,85 @@
+name = "cloudflare-agent"
+main = "src/index.ts"
+compatibility_date = "2025-03-31"
+preview_urls = false
+
+# Observability & logging
+#env = "production"
+
+# Workers configuration
+workers_dev = true
+
+# Timeout for long-running agent tasks
+limits = { cpu_ms = 30000 }
+
+# Environment-specific configuration
+[env.production]
+
+[env.production.vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "info"
+AI_GATEWAY_BASE_URL = ""
+AI_GATEWAY_ROUTE_ANALYST = "v1/analyze"
+AI_GATEWAY_ROUTE_CLASSIFIER = "v1/classify"
+AUTO_START_WORKFLOW = "false"
+
+[[env.production.durable_objects.bindings]]
+name = "TASK_COORDINATOR"
+class_name = "TaskCoordinatorDO"
+
+[[env.production.r2_buckets]]
+binding = "R2_ARTIFACTS"
+bucket_name = "agent-artifacts-prod"
+
+[[env.production.r2_buckets]]
+binding = "R2_WORKLOGS"
+bucket_name = "agent-worklogs-prod"
+
+[env.development]
+
+[env.development.vars]
+ENVIRONMENT = "development"
+LOG_LEVEL = "debug"
+AI_GATEWAY_BASE_URL = ""
+AI_GATEWAY_ROUTE_ANALYST = "v1/analyze"
+AI_GATEWAY_ROUTE_CLASSIFIER = "v1/classify"
+AUTO_START_WORKFLOW = "false"
+
+[[env.development.durable_objects.bindings]]
+name = "TASK_COORDINATOR"
+class_name = "TaskCoordinatorDO"
+
+[[env.development.r2_buckets]]
+binding = "R2_ARTIFACTS"
+bucket_name = "agent-artifacts-dev"
+
+[[env.development.r2_buckets]]
+binding = "R2_WORKLOGS"
+bucket_name = "agent-worklogs-dev"
+
+# Durable Objects migrations
+[[migrations]]
+tag = "v1"
+new_classes = ["TaskCoordinatorDO"]
+
+# Workflows (optional, Phase 3)
+# [workflows]
+# main = "src/workflows/task-workflow.ts"
+
+# Build configuration
+[build]
+command = "npm run build"
+
+# Triggers (for scheduled tasks if needed)
+# [[triggers.crons]]
+# crons = ["0 */6 * * *"]  # Every 6 hours
+
+# Routes (API endpoints)
+# Optional: use if exposing specific REST paths
+# [[routes]]
+# pattern = "api.example.com/agent/*"
+# zone_id = "TODO"
+
+# Analytics Engine for custom metrics (Phase 4)
+# [[analytics_engine_datasets]]
+# binding = "ANALYTICS"
