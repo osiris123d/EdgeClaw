@@ -335,6 +335,7 @@ Planned:
 
 ## License
 
-[Insert your license here, e.g., MIT, Apache 2.0]
+Create a LICENSE file for this project using MIT license.
+Include my name as the author.
 
 Built with Cloudflare Workers, Durable Objects, R2, and TypeScript.
