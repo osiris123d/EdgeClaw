@@ -51,6 +51,12 @@ import {
   renderChatPage,
   sseEvent,
 } from "./lib/chat";
+import {
+  EdgeClawConfig,
+  validateEdgeClawConfig,
+  nextVersion,
+  ConfigChangeEntry,
+} from "./lib/edgeclaw-config";
 
 export { TaskCoordinatorDO, ChatAgentImpl };
 
@@ -60,6 +66,7 @@ const RE_APPROVE  = /^\/tasks\/([^/]+)\/approve$/;
 const RE_REJECT   = /^\/tasks\/([^/]+)\/reject$/;
 const RE_APPROVAL = /^\/tasks\/([^/]+)\/approval$/;
 const RE_TASK_GET = /^\/tasks\/([^/]+)$/;
+const RE_API_TASK_GET = /^\/api\/tasks\/([^/]+)$/;
 const RE_CHAT_MESSAGES = /^\/api\/chat\/sessions\/([^/]+)\/messages$/;
 
 function validateCriticalEnv(env: Env): string[] {
@@ -79,11 +86,23 @@ function isProtectedApiPath(pathname: string): boolean {
 }
 
 function isBrowserFacingRoute(pathname: string): boolean {
-  return pathname === "/chat" || pathname.startsWith("/api/chat/") || pathname === "/api/chat/sessions" || pathname.startsWith("/api/agents/");
+  return (
+    pathname === "/" ||
+    pathname === "/system" ||
+    pathname === "/tasks-console" ||
+    pathname === "/chat" ||
+    pathname.startsWith("/api/chat/") ||
+    pathname === "/api/chat/sessions" ||
+    pathname.startsWith("/api/agents/") ||
+    pathname === "/api/tasks" ||
+    pathname.startsWith("/api/tasks/")
+  );
 }
 
 function isApiKeyOnlyRoute(pathname: string): boolean {
-  return pathname.startsWith("/tasks");
+  const isTasksMachineRoute = pathname === "/tasks" || pathname.startsWith("/tasks/");
+  const isConfigMachineRoute = pathname === "/config" || pathname.startsWith("/config/");
+  return isTasksMachineRoute || isConfigMachineRoute;
 }
 
 function getConfiguredApiKey(env: Env): string | undefined {
@@ -95,6 +114,963 @@ function getConfiguredApiKey(env: Env): string | undefined {
   if (!key) return undefined;
   const trimmed = key.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function getBrowserIdentity(auth: ReturnType<typeof authenticateRequest>): Record<string, unknown> {
+  return {
+    mode: auth.mode,
+    userId: auth.userId ?? null,
+    email: auth.email ?? null,
+    accessSubject: auth.accessSubject ?? null,
+  };
+}
+
+// ─── Config Storage Helpers ────────────────────────────────────────────────
+
+function keyEdgeClawConfig(version?: string, orgPrefix = "org/hilton"): string {
+  if (version) {
+    return `${orgPrefix}/config/edgeclaw-v${version}.json`;
+  }
+  return `${orgPrefix}/config/edgeclaw-current.json`;
+}
+
+async function getEdgeClawConfig(
+  bucket: any,
+  version?: string,
+  orgPrefix = "org/hilton"
+): Promise<EdgeClawConfig | null> {
+  const key = keyEdgeClawConfig(version, orgPrefix);
+  try {
+    const obj = await bucket.get(key);
+    if (!obj) return null;
+    return JSON.parse(await obj.text()) as EdgeClawConfig;
+  } catch {
+    return null;
+  }
+}
+
+async function saveEdgeClawConfig(
+  bucket: any,
+  config: EdgeClawConfig,
+  orgPrefix = "org/hilton"
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const currentKey = keyEdgeClawConfig(undefined, orgPrefix);
+    const versionKey = keyEdgeClawConfig(config.metadata.version, orgPrefix);
+    
+    // Write versioned snapshot
+    await bucket.put(versionKey, JSON.stringify(config, null, 2), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    
+    // Update current pointer
+    await bucket.put(currentKey, JSON.stringify(config, null, 2), {
+      httpMetadata: { contentType: "application/json" },
+    });
+    
+    return { ok: true };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to save config",
+    };
+  }
+}
+
+async function appendConfigHistory(
+  bucket: any,
+  entry: ConfigChangeEntry,
+  orgPrefix = "org/hilton"
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const historyKey = `${orgPrefix}/config/config-history.jsonl`;
+    const line = JSON.stringify(entry);
+    
+    // Append mode: fetch existing, add new line, put back
+    let existing = "";
+    try {
+      const obj = await bucket.get(historyKey);
+      if (obj) existing = await obj.text();
+    } catch {
+      // File doesn't exist yet, that's fine
+    }
+    
+    const newContent = existing ? existing + "\n" + line : line;
+    await bucket.put(historyKey, newContent, {
+      httpMetadata: { contentType: "application/x-ndjson" },
+    });
+    
+    return { ok: true };
+  } catch (err: unknown) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : "Failed to save history",
+    };
+  }
+}
+
+function renderTasksConsole(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tasks Console</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      font-size: 14px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    header {
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .subtitle { color: #666; margin: 4px 0 0; }
+    
+    .layout { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
+    
+    .task-list {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      max-height: 600px;
+      overflow-y: auto;
+    }
+    .task-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e0e0e0;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .task-item:hover { background: #f9f9f9; }
+    .task-item.selected { background: #e3f2fd; border-left: 3px solid #2563eb; }
+    .task-id { font-size: 13px; font-weight: 600; color: #2563eb; }
+    .task-status { font-size: 12px; color: #999; margin-top: 4px; }
+    
+    .task-detail {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      padding: 20px;
+      min-height: 600px;
+    }
+    .detail-empty { color: #999; font-style: italic; }
+    
+    .detail-row {
+      display: grid;
+      grid-template-columns: 140px 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .detail-label { font-weight: 600; color: #666; }
+    .detail-value { white-space: pre-wrap; word-break: break-word; }
+    
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-queued { background: #fef3c7; color: #92400e; }
+    .badge-in_progress { background: #dbeafe; color: #1e40af; }
+    .badge-awaiting_approval { background: #fed7aa; color: #9a3412; }
+    .badge-completed { background: #dcfce7; color: #166534; }
+    .badge-failed { background: #fee2e2; color: #991b1b; }
+    
+    .section-title {
+      font-weight: 600;
+      margin-top: 16px;
+      margin-bottom: 8px;
+      color: #1a1a1a;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    
+    .worklog-entry {
+      padding: 8px;
+      margin-bottom: 8px;
+      background: #f9f9f9;
+      border-left: 3px solid #ddd;
+      border-radius: 2px;
+      font-size: 13px;
+    }
+    .worklog-action { font-weight: 500; color: #2563eb; }
+    .worklog-time { color: #999; font-size: 12px; }
+    
+    .action-buttons {
+      display: flex;
+      gap: 8px;
+      margin-top: 20px;
+      padding-top: 20px;
+      border-top: 1px solid #e0e0e0;
+    }
+    button {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: opacity 0.15s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-approve {
+      background: #10b981;
+      color: white;
+    }
+    .btn-approve:hover:not(:disabled) { opacity: 0.9; }
+    .btn-reject {
+      background: #ef4444;
+      color: white;
+    }
+    .btn-reject:hover:not(:disabled) { opacity: 0.9; }
+    .btn-run {
+      background: #2563eb;
+      color: white;
+    }
+    .btn-run:hover:not(:disabled) { opacity: 0.9; }
+    .status-msg { margin-top: 12px; padding: 8px; border-radius: 4px; font-size: 13px; }
+    .status-msg.success { background: #dcfce7; color: #166534; }
+    .status-msg.error { background: #fee2e2; color: #991b1b; }
+    
+    .list-loading { padding: 16px; color: #999; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Tasks Console</h1>
+      <p class="subtitle">View task status, worklog, and audit results. Approve or reject paused tasks.</p>
+    </header>
+
+    <div class="layout">
+      <div class="task-list">
+        <div id="task-list-content" class="list-loading">Loading tasks...</div>
+      </div>
+
+      <div class="task-detail" id="task-detail">
+        <p class="detail-empty">Select a task to view details</p>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const listEl = document.getElementById('task-list-content');
+    const detailEl = document.getElementById('task-detail');
+    let tasks = [];
+    let selectedTaskId = null;
+
+    async function loadTasks() {
+      try {
+        const res = await fetch('/api/tasks');
+        if (!res.ok) throw new Error('Failed to load tasks');
+        const data = await res.json();
+        tasks = data.tasks || [];
+        renderTaskList();
+      } catch (err) {
+        listEl.innerHTML = '<div class="list-loading" style="color: #d32f2f;">Error loading tasks</div>';
+      }
+    }
+
+    function renderTaskList() {
+      if (tasks.length === 0) {
+        listEl.innerHTML = '<div class="list-loading">No tasks</div>';
+        return;
+      }
+      listEl.innerHTML = tasks.map(task => {
+        const id = task.taskId || '';
+        const status = task.status || 'unknown';
+        return \`
+        <div class="task-item \${selectedTaskId === id ? 'selected' : ''}" onclick="selectTask('\${id}')">
+          <div class="task-id">\${id.slice(0, 12)}...</div>
+          <div class="task-status">\${status}</div>
+        </div>
+      \`;
+      }).join('');
+    }
+
+    async function selectTask(taskId) {
+      selectedTaskId = taskId;
+      renderTaskList();
+      await loadTaskDetail(taskId);
+    }
+
+    async function loadTaskDetail(taskId) {
+      try {
+        detailEl.innerHTML = '<p style="color: #999;">Loading...</p>';
+        const res = await fetch('/api/tasks/' + taskId);
+        if (!res.ok) throw new Error('Task not found');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error);
+        renderTaskDetail(data);
+      } catch (err) {
+        detailEl.innerHTML = '<p style="color: #d32f2f;">Error: ' + (err.message || 'Failed to load') + '</p>';
+      }
+    }
+
+    function renderTaskDetail(data) {
+      const task = data.task;
+      const worklog = data.worklog || [];
+      const isAwaitingApproval = task.approvalState === 'pending' || task.status === 'awaiting_approval';
+      
+      let html = '';
+      
+      // Core task info
+      html += '<div class="detail-row">';
+      html += '  <div class="detail-label">Task ID</div>';
+      html += '  <div class="detail-value">' + task.taskId + '</div>';
+      html += '</div>';
+      
+      html += '<div class="detail-row">';
+      html += '  <div class="detail-label">Status</div>';
+      html += '  <div class="detail-value"><span class="badge badge-' + task.status + '">' + task.status + '</span></div>';
+      html += '</div>';
+      
+      html += '<div class="detail-row">';
+      html += '  <div class="detail-label">Type / Domain</div>';
+      html += '  <div class="detail-value">' + (task.taskType || 'n/a') + ' / ' + (task.domain || 'n/a') + '</div>';
+      html += '</div>';
+      
+      if (task.completedAt) {
+        html += '<div class="detail-row">';
+        html += '  <div class="detail-label">Completed</div>';
+        html += '  <div class="detail-value">' + task.completedAt + '</div>';
+        html += '</div>';
+      }
+      
+      // Audit results
+      if (data.resultAvailable) {
+        html += '<div class="section-title">Audit Results</div>';
+        
+        if (data.auditVerdict) {
+          html += '<div class="detail-row">';
+          html += '  <div class="detail-label">Verdict</div>';
+          html += '  <div class="detail-value">' + data.auditVerdict + '</div>';
+          html += '</div>';
+        }
+        
+        if (typeof data.auditScore === 'number') {
+          html += '<div class="detail-row">';
+          html += '  <div class="detail-label">Score</div>';
+          html += '  <div class="detail-value">' + data.auditScore.toFixed(2) + '</div>';
+          html += '</div>';
+        }
+        
+        if (typeof data.findingCount === 'number') {
+          html += '<div class="detail-row">';
+          html += '  <div class="detail-label">Finding Count</div>';
+          html += '  <div class="detail-value">' + data.findingCount + '</div>';
+          html += '</div>';
+        }
+        
+        if (data.analystOutput && data.analystOutput.recommendations) {
+          html += '<div class="detail-row">';
+          html += '  <div class="detail-label">Analyst</div>';
+          html += '  <div class="detail-value">';
+          html += data.analystOutput.recommendations.slice(0, 2).map(r => '• ' + r).join('\\n');
+          html += '</div>';
+          html += '</div>';
+        }
+      }
+      
+      // Worklog
+      if (worklog.length > 0) {
+        html += '<div class="section-title">Worklog</div>';
+        for (const entry of worklog.slice(0, 5)) {
+          html += '<div class="worklog-entry">';
+          html += '  <div class="worklog-action">' + (entry.action || 'event') + '</div>';
+          html += '  <div class="worklog-time">' + entry.timestamp + '</div>';
+          if (entry.summary) {
+            html += '  <div style="margin-top: 4px;">' + entry.summary + '</div>';
+          }
+          html += '</div>';
+        }
+      }
+      
+      // Action buttons
+      html += '<div class="action-buttons">';
+      if (isAwaitingApproval) {
+        html += '  <button class="btn-approve" onclick="approve()">Approve</button>';
+        html += '  <button class="btn-reject" onclick="reject()">Reject</button>';
+      } else if (task.status === 'queued') {
+        html += '  <button class="btn-run" onclick="runNext()">Run Next</button>';
+      }
+      html += '</div>';
+      html += '<div id="action-status"></div>';
+      
+      detailEl.innerHTML = html;
+    }
+
+    async function approve() {
+      const statusEl = document.getElementById('action-status');
+      try {
+        statusEl.innerHTML = '<div class="status-msg">Approving...</div>';
+        const res = await fetch('/tasks/' + selectedTaskId + '/approve', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewerNote: 'Approved from console' })
+        });
+        if (!res.ok) throw new Error('Approval failed');
+        statusEl.innerHTML = '<div class="status-msg success">Approved successfully</div>';
+        await loadTaskDetail(selectedTaskId);
+      } catch (err) {
+        statusEl.innerHTML = '<div class="status-msg error">Error: ' + (err.message || 'Failed') + '</div>';
+      }
+    }
+
+    async function reject() {
+      const statusEl = document.getElementById('action-status');
+      try {
+        statusEl.innerHTML = '<div class="status-msg">Rejecting...</div>';
+        const res = await fetch('/tasks/' + selectedTaskId + '/reject', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reviewerNote: 'Rejected from console' })
+        });
+        if (!res.ok) throw new Error('Rejection failed');
+        statusEl.innerHTML = '<div class="status-msg success">Rejected successfully</div>';
+        await loadTaskDetail(selectedTaskId);
+      } catch (err) {
+        statusEl.innerHTML = '<div class="status-msg error">Error: ' + (err.message || 'Failed') + '</div>';
+      }
+    }
+
+    async function runNext() {
+      const statusEl = document.getElementById('action-status');
+      try {
+        statusEl.innerHTML = '<div class="status-msg">Running...</div>';
+        const res = await fetch('/tasks/run-next', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ taskId: selectedTaskId })
+        });
+        if (!res.ok) throw new Error('Execution failed');
+        statusEl.innerHTML = '<div class="status-msg success">Executed successfully</div>';
+        await loadTaskDetail(selectedTaskId);
+      } catch (err) {
+        statusEl.innerHTML = '<div class="status-msg error">Error: ' + (err.message || 'Failed') + '</div>';
+      }
+    }
+
+    loadTasks();
+  </script>
+</body>
+</html>`;
+}
+
+function renderSystemPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>System Status</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+      font-size: 14px;
+    }
+    .container {
+      max-width: 1000px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    header {
+      margin-bottom: 24px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .subtitle { color: #666; margin: 4px 0 0; }
+    
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+    @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+    
+    .panel {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      padding: 16px;
+    }
+    
+    .status-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 12px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #f0f0f0;
+    }
+    .status-label { font-weight: 600; color: #666; }
+    .status-value { display: flex; align-items: center; gap: 8px; }
+    
+    .badge {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .badge-healthy { background: #dcfce7; color: #166534; }
+    .badge-warning { background: #fef3c7; color: #92400e; }
+    .badge-error { background: #fee2e2; color: #991b1b; }
+    .badge-unknown { background: #f3f4f6; color: #4b5563; }
+    
+    .check-item {
+      padding: 8px;
+      margin: 4px 0;
+      background: #f9f9f9;
+      border-left: 3px solid #e0e0e0;
+      border-radius: 2px;
+      font-size: 13px;
+    }
+    .check-item.pass { border-left-color: #10b981; background: #f0fdf4; }
+    .check-item.fail { border-left-color: #ef4444; background: #fef2f2; }
+    
+    .task-summary {
+      padding: 8px;
+      margin: 4px 0;
+      background: #f9f9f9;
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    
+    .status-loading { color: #999; font-style: italic; }
+    .status-error { color: #d32f2f; font-weight: 500; }
+    .status-ok { color: #2e7d32; font-weight: 500; }
+    
+    .full-width { grid-column: 1 / -1; }
+    
+    h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+      color: #1a1a1a;
+      border-bottom: 1px solid #e0e0e0;
+      padding-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>System Status</h1>
+      <p class="subtitle">Real-time health, readiness, and task activity monitoring</p>
+    </header>
+
+    <div class="grid">
+      <!-- Health Check -->
+      <div class="panel">
+        <h2>Liveness</h2>
+        <div class="status-row">
+          <div class="status-label">/health</div>
+          <div class="status-value">
+            <span id="health-status" class="status-loading">Loading...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Readiness Checks -->
+      <div class="panel">
+        <h2>Readiness</h2>
+        <div id="ready-checks" class="status-loading">Loading...</div>
+      </div>
+
+      <!-- Task Statistics -->
+      <div class="panel">
+        <h2>Task Activity</h2>
+        <div id="task-stats" class="status-loading">Loading...</div>
+      </div>
+
+      <!-- Environment -->
+      <div class="panel">
+        <h2>Environment</h2>
+        <div class="status-row">
+          <div class="status-label">Origin</div>
+          <div class="status-value"><code id="env-origin">—</code></div>
+        </div>
+        <div class="status-row">
+          <div class="status-label">Timestamp</div>
+          <div class="status-value"><code id="env-timestamp">—</code></div>
+        </div>
+      </div>
+
+      <!-- Errors (if any) -->
+      <div class="panel full-width" id="error-panel" style="display:none;">
+        <h2>Warnings</h2>
+        <div id="error-messages"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const healthEl = document.getElementById('health-status');
+    const readyEl = document.getElementById('ready-checks');
+    const taskEl = document.getElementById('task-stats');
+    const originEl = document.getElementById('env-origin');
+    const timestampEl = document.getElementById('env-timestamp');
+    const errorPanel = document.getElementById('error-panel');
+    const errorMessages = document.getElementById('error-messages');
+
+    const errors = [];
+
+    async function checkHealth() {
+      try {
+        const res = await fetch('/health');
+        if (res.ok) {
+          healthEl.innerHTML = '<span class="badge badge-healthy">✓ Healthy</span>';
+          return true;
+        } else {
+          healthEl.innerHTML = '<span class="badge badge-error">✗ Unhealthy</span>';
+          errors.push('Health check returned non-2xx status');
+          return false;
+        }
+      } catch (err) {
+        healthEl.innerHTML = '<span class="badge badge-error">✗ Error</span>';
+        errors.push('Failed to reach /health: ' + (err.message || 'Unknown'));
+        return false;
+      }
+    }
+
+    async function checkReadiness() {
+      try {
+        const res = await fetch('/ready');
+        if (!res.ok) {
+          readyEl.innerHTML = '<span class="status-error">Service not ready</span>';
+          return;
+        }
+        const data = await res.json();
+        const checks = data.checks || {};
+        
+        let html = '';
+        for (const [check, passed] of Object.entries(checks)) {
+          const label = check
+            .replace(/([A-Z])/g, ' \$1')
+            .trim()
+            .charAt(0)
+            .toUpperCase() + check.slice(1);
+          html += '<div class="check-item ' + (passed ? 'pass' : 'fail') + '">' +
+            (passed ? '✓' : '✗') + ' ' + label +
+            '</div>';
+        }
+        if (data.errors && data.errors.length > 0) {
+          for (const err of data.errors) {
+            html += '<div class="check-item fail">⚠ ' + err + '</div>';
+            errors.push('Readiness: ' + err);
+          }
+        }
+        readyEl.innerHTML = html || '<span class="status-ok">All checks passed</span>';
+      } catch (err) {
+        readyEl.innerHTML = '<span class="status-error">Failed to check readiness</span>';
+        errors.push('Readiness check error: ' + (err.message || 'Unknown'));
+      }
+    }
+
+    async function loadTaskActivity() {
+      try {
+        const res = await fetch('/api/tasks');
+        if (!res.ok) {
+          taskEl.innerHTML = '<span class="status-loading">No task data available</span>';
+          return;
+        }
+        const data = await res.json();
+        const tasks = data.tasks || [];
+        const count = data.count || 0;
+
+        let html = '';
+        html += '<div class="status-row">';
+        html += '  <div class="status-label">Total</div>';
+        html += '  <div class="status-value"><strong>' + count + '</strong></div>';
+        html += '</div>';
+
+        if (tasks.length > 0) {
+          const statuses = {};
+          for (const task of tasks) {
+            statuses[task.status] = (statuses[task.status] || 0) + 1;
+          }
+          html += '<div><strong>By Status:</strong></div>';
+          for (const [status, count] of Object.entries(statuses)) {
+            html += '<div class="task-summary">' + status + ': <strong>' + count + '</strong></div>';
+          }
+        }
+
+        taskEl.innerHTML = html;
+      } catch (err) {
+        taskEl.innerHTML = '<span class="status-loading">Unable to load task activity</span>';
+      }
+    }
+
+    function updateEnvironment() {
+      originEl.textContent = window.location.origin;
+      timestampEl.textContent = new Date().toISOString();
+    }
+
+    function displayErrors() {
+      if (errors.length > 0) {
+        errorPanel.style.display = 'block';
+        errorMessages.innerHTML = errors.map(e => '<div style="padding:4px;color:#d32f2f;">• ' + e + '</div>').join('');
+      }
+    }
+
+    async function load() {
+      updateEnvironment();
+      await Promise.all([
+        checkHealth(),
+        checkReadiness(),
+        loadTaskActivity(),
+      ]);
+      displayErrors();
+    }
+
+    load();
+  </script>
+</body>
+</html>`;
+}
+
+function renderAppShell(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EdgeClaw</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+    }
+
+    .navbar {
+      background: white;
+      border-bottom: 2px solid #e0e0e0;
+      padding: 16px 24px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .navbar-content {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+    }
+
+    .navbar-brand {
+      font-size: 18px;
+      font-weight: 700;
+      color: #2563eb;
+      text-decoration: none;
+      margin: 0;
+    }
+
+    .navbar-nav {
+      display: flex;
+      gap: 24px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      flex: 1;
+    }
+
+    .navbar-nav a {
+      text-decoration: none;
+      color: #666;
+      font-weight: 500;
+      font-size: 14px;
+      padding: 8px 0;
+      border-bottom: 2px solid transparent;
+      transition: all 0.2s;
+    }
+
+    .navbar-nav a:hover {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+
+    .navbar-nav a.active {
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 24px auto;
+      padding: 0 24px;
+    }
+
+    .hero {
+      background: white;
+      border-radius: 8px;
+      padding: 48px 24px;
+      text-align: center;
+      margin-bottom: 32px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    .hero h1 {
+      margin: 0 0 12px;
+      font-size: 32px;
+    }
+
+    .hero p {
+      margin: 0 0 24px;
+      color: #666;
+      font-size: 16px;
+    }
+
+    .nav-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+
+    .nav-card {
+      background: white;
+      border-radius: 8px;
+      padding: 24px;
+      text-decoration: none;
+      color: inherit;
+      border: 1px solid #e0e0e0;
+      transition: all 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+
+    .nav-card:hover {
+      border-color: #2563eb;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+      transform: translateY(-2px);
+    }
+
+    .nav-card-icon {
+      font-size: 32px;
+      margin-bottom: 12px;
+    }
+
+    .nav-card-title {
+      font-weight: 600;
+      margin-bottom: 8px;
+      font-size: 16px;
+    }
+
+    .nav-card-desc {
+      font-size: 13px;
+      color: #999;
+    }
+
+    footer {
+      text-align: center;
+      padding: 32px 24px;
+      color: #999;
+      font-size: 13px;
+    }
+
+    @media (max-width: 640px) {
+      .navbar-content {
+        flex-direction: column;
+        gap: 16px;
+        align-items: flex-start;
+      }
+
+      .navbar-nav {
+        gap: 16px;
+        flex-direction: column;
+      }
+
+      .nav-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="navbar-content">
+      <h1 class="navbar-brand">EdgeClaw</h1>
+      <ul class="navbar-nav" id="navbar-nav">
+        <li><a href="/chat" data-route="/chat">Chat</a></li>
+        <li><a href="/tasks-console" data-route="/tasks-console">Tasks</a></li>
+        <li><a href="/system" data-route="/system">System</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="hero">
+      <h1>Welcome to EdgeClaw</h1>
+      <p>Enterprise network operations automation and analysis</p>
+    </div>
+
+    <div class="nav-grid">
+      <a href="/chat" class="nav-card">
+        <div class="nav-card-icon">💬</div>
+        <div class="nav-card-title">Chat</div>
+        <div class="nav-card-desc">Task creation and analysis via conversation</div>
+      </a>
+
+      <a href="/tasks-console" class="nav-card">
+        <div class="nav-card-icon">📋</div>
+        <div class="nav-card-title">Tasks</div>
+        <div class="nav-card-desc">Monitor and manage task execution</div>
+      </a>
+
+      <a href="/system" class="nav-card">
+        <div class="nav-card-icon">🔧</div>
+        <div class="nav-card-title">System</div>
+        <div class="nav-card-desc">Health, readiness, and diagnostics</div>
+      </a>
+    </div>
+  </div>
+
+  <footer>
+    <p>EdgeClaw — AI-powered network operations</p>
+  </footer>
+
+  <script>
+    // Simple client-side active link tracking
+    function updateActiveLink() {
+      const current = window.location.pathname;
+      const links = document.querySelectorAll('.navbar-nav a');
+      links.forEach(link => {
+        if (link.getAttribute('data-route') === current) {
+          link.classList.add('active');
+        } else {
+          link.classList.remove('active');
+        }
+      });
+    }
+
+    updateActiveLink();
+    window.addEventListener('hashchange', updateActiveLink);
+  </script>
+</body>
+</html>`;
 }
 
 export default {
@@ -163,6 +1139,24 @@ export default {
         return json({ ok: ready, checks, errors: errors.length > 0 ? errors : undefined }, ready ? 200 : 503);
       }
 
+      // ── GET / ─────────────────────────────────────────────────────────────
+      // App shell with navigation hub to all main pages.
+      if (request.method === "GET" && pathname === "/") {
+        return new Response(renderAppShell(), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
+      // ── GET /system ────────────────────────────────────────────────────────
+      // System status dashboard: health, readiness, task activity.
+      if (request.method === "GET" && pathname === "/system") {
+        return new Response(renderSystemPage(), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
       if (isApiKeyOnlyRoute(pathname)) {
         const configuredApiKey = getConfiguredApiKey(env);
         if (!configuredApiKey) {
@@ -194,10 +1188,108 @@ export default {
       const agentResponse = await routeAgentRequest(request, env, { prefix: "/api/agents" });
       if (agentResponse) return agentResponse;
 
+      // ── GET /config ────────────────────────────────────────────────────────
+      // Returns the current EdgeClaw configuration.
+      if (request.method === "GET" && pathname === "/config") {
+        const config = await getEdgeClawConfig(env.R2_ARTIFACTS);
+        if (!config) {
+          return json({ ok: false, error: "No configuration found." }, 404);
+        }
+        return json({ ok: true, config }, 200);
+      }
+
+      // ── POST /config/validate ──────────────────────────────────────────────
+      // Validates a config without saving it.
+      if (request.method === "POST" && pathname === "/config/validate") {
+        const parsed = await parseJsonOr400(request);
+        if (!parsed.ok) return parsed.response;
+        
+        const validation = validateEdgeClawConfig(parsed.body);
+        if (!validation.ok) {
+          return json({
+            ok: false,
+            errors: validation.errors,
+          }, 400);
+        }
+        return json({ ok: true, message: "Config is valid" }, 200);
+      }
+
+      // ── PUT /config ────────────────────────────────────────────────────────
+      // Validates and saves a new configuration version.
+      if (request.method === "PUT" && pathname === "/config") {
+        const parsed = await parseJsonOr400(request);
+        if (!parsed.ok) return parsed.response;
+
+        const validation = validateEdgeClawConfig(parsed.body);
+        if (!validation.ok) {
+          return json({
+            ok: false,
+            errors: validation.errors,
+          }, 400);
+        }
+
+        const newConfig = validation.config!;
+        const oldConfig = await getEdgeClawConfig(env.R2_ARTIFACTS);
+        
+        // Auto-increment version if not specified
+        if (!oldConfig || oldConfig.metadata.version === newConfig.metadata.version) {
+          newConfig.metadata.version = oldConfig 
+            ? nextVersion(oldConfig.metadata.version)
+            : "1.0.0";
+        }
+
+        newConfig.metadata.updatedAt = new Date().toISOString();
+
+        const saved = await saveEdgeClawConfig(env.R2_ARTIFACTS, newConfig);
+        if (!saved.ok) {
+          return json({ ok: false, error: saved.error }, 500);
+        }
+
+        const historyEntry: ConfigChangeEntry = {
+          timestamp: new Date().toISOString(),
+          version: newConfig.metadata.version,
+          actor: "api",
+          summary: `Config updated to v${newConfig.metadata.version}`,
+        };
+        await appendConfigHistory(env.R2_ARTIFACTS, historyEntry);
+
+        return json({
+          ok: true,
+          message: "Config saved",
+          version: newConfig.metadata.version,
+          config: newConfig,
+        }, 200);
+      }
+
+      // ── GET /config/export ─────────────────────────────────────────────────
+      // Returns raw config JSON suitable for file download.
+      if (request.method === "GET" && pathname === "/config/export") {
+        const config = await getEdgeClawConfig(env.R2_ARTIFACTS);
+        if (!config) {
+          return json({ ok: false, error: "No configuration found." }, 404);
+        }
+        return new Response(JSON.stringify(config, null, 2), {
+          status: 200,
+          headers: {
+            "Content-Type": "application/json; charset=utf-8",
+            "Content-Disposition": `attachment; filename="edgeclaw-v${config.metadata.version}.json"`,
+          },
+        });
+      }
+
       // ── GET /chat ──────────────────────────────────────────────────────────
       // Minimal frontend entrypoint. No bundler or React runtime required.
       if (request.method === "GET" && pathname === "/chat") {
         return new Response(renderChatPage(), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
+      // ── GET /tasks-console ─────────────────────────────────────────────────
+      // Minimal task management UI for viewing task status and approval.
+      if (request.method === "GET" && pathname === "/tasks-console") {
+        return new Response(renderTasksConsole(), {
           status: 200,
           headers: { "Content-Type": "text/html; charset=utf-8" },
         });
@@ -592,6 +1684,97 @@ export default {
         return handleDecision(env, rejectMatch[1], false, parsed.body, baseUrl);
       }
 
+      // ── GET /api/tasks/:taskId ─────────────────────────────────────────────
+      // Browser-facing task detail for Access-authenticated UI flows.
+      const apiTaskGetMatch = RE_API_TASK_GET.exec(pathname);
+      if (request.method === "GET" && apiTaskGetMatch) {
+        const taskId = apiTaskGetMatch[1];
+        const task = await getTask(env.R2_ARTIFACTS, taskId);
+        if (!task) {
+          return json({ ok: false, error: "Task not found." }, 404);
+        }
+        const worklog = await listWorklogEntries(env.R2_WORKLOGS, taskId);
+
+        const finalOutputArtifact = await getArtifact(
+          env.R2_ARTIFACTS,
+          taskId,
+          "final-output.json"
+        );
+
+        const response: Record<string, unknown> = {
+          ok: true,
+          viewer: getBrowserIdentity(browserAuth ?? { mode: "unauthenticated", isAuthenticated: false }),
+          task,
+          worklog,
+          resultAvailable: false,
+        };
+        if (finalOutputArtifact) {
+          const finalOutput = finalOutputArtifact.body as Record<string, unknown>;
+          const auditOutput =
+            finalOutput.auditOutput && typeof finalOutput.auditOutput === "object"
+              ? (finalOutput.auditOutput as Record<string, unknown>)
+              : undefined;
+
+          const findings = Array.isArray(auditOutput?.findings)
+            ? (auditOutput?.findings as unknown[])
+            : undefined;
+
+          response.resultAvailable = true;
+          response.auditVerdict = typeof auditOutput?.verdict === "string" ? auditOutput.verdict : undefined;
+          response.auditScore = typeof auditOutput?.score === "number" ? auditOutput.score : undefined;
+          response.findingCount = findings ? findings.length : undefined;
+          response.analystOutput = finalOutput.analystOutput;
+          response.auditOutput = finalOutput.auditOutput;
+          response.completedAt = finalOutput.completedAt;
+        }
+        return json(response, 200);
+      }
+
+      // ── GET /api/tasks ─────────────────────────────────────────────────────
+      // Browser-facing task summary list for Access-authenticated UI flows.
+      if (request.method === "GET" && pathname === "/api/tasks") {
+        try {
+          const listed = await env.R2_ARTIFACTS.list({ prefix: "org/hilton/tasks/" });
+          const taskIds = new Set<string>();
+          for (const obj of listed.objects) {
+            const match = obj.key.match(/^org\/hilton\/tasks\/([^/]+)\//);
+            if (match) taskIds.add(match[1]);
+          }
+
+          const taskSummaries: Record<string, unknown>[] = [];
+          for (const taskId of Array.from(taskIds)) {
+            const task = await getTask(env.R2_ARTIFACTS, taskId);
+            if (task) {
+              taskSummaries.push({
+                taskId: task.taskId,
+                title: task.title,
+                taskType: task.taskType,
+                domain: task.domain,
+                status: task.status,
+                approvalState: task.approvalState,
+                updatedAt: task.updatedAt,
+              });
+            }
+          }
+
+          taskSummaries.sort((a, b) => {
+            const aTime = new Date(a.updatedAt as string).getTime();
+            const bTime = new Date(b.updatedAt as string).getTime();
+            return bTime - aTime;
+          });
+
+          return json({
+            ok: true,
+            viewer: getBrowserIdentity(browserAuth ?? { mode: "unauthenticated", isAuthenticated: false }),
+            tasks: taskSummaries.slice(0, 50),
+            count: taskSummaries.length,
+          }, 200);
+        } catch (error: unknown) {
+          logRouteError("GET /api/tasks", error, {});
+          return json({ ok: false, error: "Failed to list tasks." }, 500);
+        }
+      }
+
       // ── GET /tasks/:taskId/approval ─────────────────────────────────────────
       // Returns the current approval record and UI placeholder shapes.
       // WEB UI: poll this endpoint to check whether approval is still pending.
@@ -649,17 +1832,70 @@ export default {
         return json(response, 200);
       }
 
+      // ── GET /tasks ──────────────────────────────────────────────────────────
+      // List recent tasks for the Task Console UI.
+      if (request.method === "GET" && pathname === "/tasks") {
+        try {
+          const listed = await env.R2_ARTIFACTS.list({ prefix: "org/hilton/tasks/" });
+          const taskIds = new Set<string>();
+          for (const obj of listed.objects) {
+            const match = obj.key.match(/^org\/hilton\/tasks\/([^/]+)\//);
+            if (match) taskIds.add(match[1]);
+          }
+
+          const taskSummaries: Record<string, unknown>[] = [];
+          for (const taskId of Array.from(taskIds)) {
+            const task = await getTask(env.R2_ARTIFACTS, taskId);
+            if (task) {
+              taskSummaries.push({
+                taskId: task.taskId,
+                title: task.title,
+                taskType: task.taskType,
+                domain: task.domain,
+                status: task.status,
+                approvalState: task.approvalState,
+                updatedAt: task.updatedAt,
+              });
+            }
+          }
+
+          taskSummaries.sort((a, b) => {
+            const aTime = new Date(a.updatedAt as string).getTime();
+            const bTime = new Date(b.updatedAt as string).getTime();
+            return bTime - aTime;
+          });
+
+          return json({
+            ok: true,
+            tasks: taskSummaries.slice(0, 50),
+            count: taskSummaries.length,
+          }, 200);
+        } catch (error: unknown) {
+          logRouteError("GET /tasks", error, {});
+          return json({ ok: false, error: "Failed to list tasks." }, 500);
+        }
+      }
+
       // ── Route listing ───────────────────────────────────────────────────────
       return json(
         {
           ok: true,
           routes: [
             "GET  /chat",
+            "GET  /system",
+            "GET  /tasks-console",
+            "GET  /config",
+            "POST /config/validate",
+            "PUT  /config",
+            "GET  /config/export",
             "GET  /health",
             "GET  /ready",
             "POST /api/chat/sessions",
             "GET  /api/chat/sessions/:sessionId/messages",
             "POST /api/chat/sessions/:sessionId/messages",
+            "GET  /api/tasks",
+            "GET  /api/tasks/:taskId",
+            "GET  /tasks",
             "POST /tasks",
             "POST /tasks/run-next",
             "POST /tasks/:taskId/approve",
