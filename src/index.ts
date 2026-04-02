@@ -88,6 +88,7 @@ function isProtectedApiPath(pathname: string): boolean {
 function isBrowserFacingRoute(pathname: string): boolean {
   return (
     pathname === "/" ||
+    pathname === "/config-ui" ||
     pathname === "/system" ||
     pathname === "/tasks-console" ||
     pathname === "/chat" ||
@@ -97,6 +98,10 @@ function isBrowserFacingRoute(pathname: string): boolean {
     pathname === "/api/tasks" ||
     pathname.startsWith("/api/tasks/")
   );
+}
+
+function isConfigApiRoute(pathname: string): boolean {
+  return pathname === "/config" || pathname === "/config/export" || pathname === "/config/validate";
 }
 
 function isApiKeyOnlyRoute(pathname: string): boolean {
@@ -1016,6 +1021,7 @@ function renderAppShell(): string {
       <ul class="navbar-nav" id="navbar-nav">
         <li><a href="/chat" data-route="/chat">Chat</a></li>
         <li><a href="/tasks-console" data-route="/tasks-console">Tasks</a></li>
+        <li><a href="/config-ui" data-route="/config-ui">Config</a></li>
         <li><a href="/system" data-route="/system">System</a></li>
       </ul>
     </div>
@@ -1038,6 +1044,12 @@ function renderAppShell(): string {
         <div class="nav-card-icon">📋</div>
         <div class="nav-card-title">Tasks</div>
         <div class="nav-card-desc">Monitor and manage task execution</div>
+      </a>
+
+      <a href="/config-ui" class="nav-card">
+        <div class="nav-card-icon">⚙️</div>
+        <div class="nav-card-title">Config</div>
+        <div class="nav-card-desc">Edit project, models, channels, and security</div>
       </a>
 
       <a href="/system" class="nav-card">
@@ -1073,6 +1085,623 @@ function renderAppShell(): string {
 </html>`;
 }
 
+function renderConfigPage(): string {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EdgeClaw Config</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #f5f5f5;
+      color: #1a1a1a;
+    }
+    .page {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 20px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #e0e0e0;
+    }
+    h1 { margin: 0; font-size: 24px; }
+    .subtitle { color: #666; margin: 4px 0 0; font-size: 13px; }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    button, .link-btn {
+      padding: 10px 14px;
+      border: 1px solid #d0d0d0;
+      background: white;
+      border-radius: 6px;
+      font: inherit;
+      cursor: pointer;
+      text-decoration: none;
+      color: inherit;
+    }
+    button.primary {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: white;
+    }
+    .status {
+      margin-bottom: 16px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      background: #eef2ff;
+      color: #1e3a8a;
+      font-size: 13px;
+    }
+    .status.error {
+      background: #fef2f2;
+      color: #991b1b;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .stack {
+      display: grid;
+      gap: 16px;
+    }
+    .panel {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .panel h2 {
+      margin: 0 0 12px;
+      font-size: 16px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    .field.full {
+      grid-column: 1 / -1;
+    }
+    label {
+      font-size: 12px;
+      color: #555;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    input[type="text"],
+    input[type="number"],
+    textarea,
+    select {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font: inherit;
+      background: white;
+    }
+    textarea {
+      min-height: 96px;
+      resize: vertical;
+    }
+    .json-editor {
+      min-height: 760px;
+      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+    }
+    .check-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px 12px;
+    }
+    .check-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+    }
+    .agent-card,
+    .route-card,
+    .channel-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 10px;
+      background: #fafafa;
+    }
+    .hint {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #666;
+    }
+    @media (max-width: 980px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .grid, .check-grid {
+        grid-template-columns: 1fr;
+      }
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header>
+      <div>
+        <h1>EdgeClaw Config</h1>
+        <p class="subtitle">Same-origin configuration editor for project settings, agents, models, channels, and security.</p>
+      </div>
+      <div class="toolbar">
+        <a class="link-btn" href="/config/export">Export JSON</a>
+        <button id="validate-btn">Validate</button>
+        <button id="save-btn" class="primary">Save</button>
+      </div>
+    </header>
+
+    <div id="status" class="status">Loading config...</div>
+
+    <div class="layout">
+      <div class="stack">
+        <section class="panel">
+          <h2>Project</h2>
+          <div class="grid">
+            <div class="field full">
+              <label for="project-name">Project Name</label>
+              <input id="project-name" type="text" />
+            </div>
+            <div class="field">
+              <label for="project-version">Version</label>
+              <input id="project-version" type="text" />
+            </div>
+            <div class="field">
+              <label for="project-org">Org ID</label>
+              <input id="project-org" type="text" />
+            </div>
+            <div class="field full">
+              <label for="project-description">Description</label>
+              <textarea id="project-description"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Agents</h2>
+          <div id="agents-panel"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Feature Flags</h2>
+          <div id="features-panel" class="check-grid"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Model Routes</h2>
+          <div class="route-card">
+            <div class="grid">
+              <div class="field">
+                <label for="default-provider">Default Provider</label>
+                <input id="default-provider" type="text" />
+              </div>
+              <div class="field">
+                <label for="default-model">Default Model</label>
+                <input id="default-model" type="text" />
+              </div>
+            </div>
+          </div>
+          <div id="models-panel"></div>
+          <p class="hint">AI Gateway flags are stored on the model config as <code>useAIGateway</code> where applicable, and globally via the feature flag.</p>
+        </section>
+
+        <section class="panel">
+          <h2>Channels</h2>
+          <div id="channels-panel"></div>
+        </section>
+
+        <section class="panel">
+          <h2>Security</h2>
+          <div class="grid">
+            <div class="field">
+              <label for="security-threshold">Audit Score Threshold</label>
+              <input id="security-threshold" type="number" step="0.01" min="0" max="1" />
+            </div>
+            <div class="field check-item" style="margin-top: 24px;">
+              <input id="security-escalation" type="checkbox" />
+              <label for="security-escalation" style="margin: 0; text-transform: none; letter-spacing: 0;">Require approval on escalation</label>
+            </div>
+            <div class="field full">
+              <label for="security-roles">Approval Roles (comma separated)</label>
+              <input id="security-roles" type="text" />
+            </div>
+            <div class="field full">
+              <label for="security-teams">Allowed Access Teams (comma separated)</label>
+              <input id="security-teams" type="text" />
+            </div>
+            <div class="field check-item" style="margin-top: 4px;">
+              <input id="security-api-key" type="checkbox" />
+              <label for="security-api-key" style="margin: 0; text-transform: none; letter-spacing: 0;">Allow API key auth</label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <h2>Raw JSON</h2>
+        <textarea id="json-editor" class="json-editor"></textarea>
+        <p class="hint">Editing raw JSON is allowed. Leaving the editor updates Validate and Save to use the edited payload.</p>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const jsonEditorEl = document.getElementById('json-editor');
+    const agentsPanelEl = document.getElementById('agents-panel');
+    const featuresPanelEl = document.getElementById('features-panel');
+    const modelsPanelEl = document.getElementById('models-panel');
+    const channelsPanelEl = document.getElementById('channels-panel');
+
+    const projectNameEl = document.getElementById('project-name');
+    const projectVersionEl = document.getElementById('project-version');
+    const projectOrgEl = document.getElementById('project-org');
+    const projectDescriptionEl = document.getElementById('project-description');
+    const defaultProviderEl = document.getElementById('default-provider');
+    const defaultModelEl = document.getElementById('default-model');
+    const securityThresholdEl = document.getElementById('security-threshold');
+    const securityEscalationEl = document.getElementById('security-escalation');
+    const securityRolesEl = document.getElementById('security-roles');
+    const securityTeamsEl = document.getElementById('security-teams');
+    const securityApiKeyEl = document.getElementById('security-api-key');
+
+    const validateBtn = document.getElementById('validate-btn');
+    const saveBtn = document.getElementById('save-btn');
+
+    let configState = null;
+
+    function setStatus(message, isError = false) {
+      statusEl.textContent = message;
+      statusEl.className = isError ? 'status error' : 'status';
+    }
+
+    function commaSplit(value) {
+      return value.split(',').map(v => v.trim()).filter(Boolean);
+    }
+
+    function createDefaultConfig() {
+      const now = new Date().toISOString();
+      return {
+        metadata: {
+          version: '1.0.0',
+          name: 'EdgeClaw',
+          description: '',
+          orgId: 'hilton',
+          createdAt: now,
+          updatedAt: now,
+          createdBy: 'config-ui'
+        },
+        agents: {
+          analyst: { name: 'Analyst', systemPrompt: '', enabled: true },
+          dispatcher: { name: 'Dispatcher', systemPrompt: '', enabled: true },
+          chat: { name: 'Chat', systemPrompt: '', enabled: true }
+        },
+        features: {
+          chatTaskCreation: true,
+          approvalWorkflows: true,
+          auditMode: true,
+          aiGatewayIntegration: false,
+          worklogPersistence: true
+        },
+        models: {
+          default: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
+          byAgent: {
+            analyst: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
+            dispatcher: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
+            chat: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } }
+          }
+        },
+        channels: {
+          chat: { enabled: true },
+          tasksConsole: { enabled: true },
+          system: { enabled: true },
+          api: { enabled: true }
+        },
+        security: {
+          approvalRules: {
+            onEscalation: true,
+            auditScoreThreshold: 0.75,
+            domainsRequiringApproval: [],
+            taskTypesRequiringApproval: []
+          },
+          approvalRoles: [],
+          allowedAccessTeams: [],
+          allowApiKeyAuth: true,
+          rateLimiting: {}
+        },
+        storage: {
+          artifactBucket: 'R2_ARTIFACTS',
+          worklogBucket: 'R2_WORKLOGS',
+          orgPrefix: 'org/hilton',
+          versionedConfigHistory: true
+        }
+      };
+    }
+
+    function syncRawEditor() {
+      jsonEditorEl.value = JSON.stringify(configState, null, 2);
+    }
+
+    function ensureConfigShape() {
+      configState.metadata = configState.metadata || {};
+      configState.agents = configState.agents || {};
+      configState.features = configState.features || {};
+      configState.models = configState.models || {};
+      configState.models.default = configState.models.default || { provider: '', name: '', config: {} };
+      configState.models.byAgent = configState.models.byAgent || {};
+      configState.channels = configState.channels || {};
+      configState.security = configState.security || {};
+      configState.security.approvalRules = configState.security.approvalRules || {};
+      configState.security.approvalRoles = Array.isArray(configState.security.approvalRoles) ? configState.security.approvalRoles : [];
+      configState.security.allowedAccessTeams = Array.isArray(configState.security.allowedAccessTeams) ? configState.security.allowedAccessTeams : [];
+    }
+
+    function renderAgents() {
+      const agentKeys = Object.keys(configState.agents || {}).sort();
+      agentsPanelEl.innerHTML = agentKeys.map((key) => {
+        const agent = configState.agents[key] || {};
+        return '<div class="agent-card">' +
+          '<div class="grid">' +
+          '  <div class="field">' +
+          '    <label>' + key + ' Display Name</label>' +
+          '    <input type="text" data-agent-name="' + key + '" value="' + escapeHtml(agent.name || '') + '" />' +
+          '  </div>' +
+          '  <div class="field check-item" style="margin-top: 24px;">' +
+          '    <input type="checkbox" data-agent-enabled="' + key + '" ' + (agent.enabled ? 'checked' : '') + ' />' +
+          '    <label style="margin: 0; text-transform: none; letter-spacing: 0;">Enabled</label>' +
+          '  </div>' +
+          '  <div class="field full">' +
+          '    <label>' + key + ' Persona</label>' +
+          '    <textarea data-agent-prompt="' + key + '">' + escapeHtml(agent.systemPrompt || '') + '</textarea>' +
+          '  </div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderFeatures() {
+      const keys = Object.keys(configState.features || {}).sort();
+      featuresPanelEl.innerHTML = keys.map((key) => {
+        return '<label class="check-item">' +
+          '<input type="checkbox" data-feature-key="' + key + '" ' + (configState.features[key] ? 'checked' : '') + ' />' +
+          '<span>' + key + '</span>' +
+        '</label>';
+      }).join('');
+    }
+
+    function renderModels() {
+      const byAgent = configState.models.byAgent || {};
+      const keys = Object.keys(byAgent).sort();
+      modelsPanelEl.innerHTML = keys.map((key) => {
+        const route = byAgent[key] || {};
+        const routeConfig = route.config || {};
+        return '<div class="route-card">' +
+          '<div class="grid">' +
+          '  <div class="field"><label>' + key + ' Provider</label><input type="text" data-model-provider="' + key + '" value="' + escapeHtml(route.provider || '') + '" /></div>' +
+          '  <div class="field"><label>' + key + ' Model</label><input type="text" data-model-name="' + key + '" value="' + escapeHtml(route.name || '') + '" /></div>' +
+          '  <div class="field check-item" style="margin-top: 24px;"><input type="checkbox" data-model-gateway="' + key + '" ' + (routeConfig.useAIGateway ? 'checked' : '') + ' /><label style="margin: 0; text-transform: none; letter-spacing: 0;">Use AI Gateway</label></div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderChannels() {
+      const keys = Object.keys(configState.channels || {}).sort();
+      channelsPanelEl.innerHTML = keys.map((key) => {
+        const channel = configState.channels[key] || {};
+        return '<div class="channel-card">' +
+          '<label class="check-item">' +
+          '<input type="checkbox" data-channel-key="' + key + '" ' + (channel.enabled ? 'checked' : '') + ' />' +
+          '<span>' + key + ' enabled</span>' +
+          '</label>' +
+          '</div>';
+      }).join('');
+    }
+
+    function renderForm() {
+      ensureConfigShape();
+      projectNameEl.value = configState.metadata.name || '';
+      projectVersionEl.value = configState.metadata.version || '';
+      projectOrgEl.value = configState.metadata.orgId || '';
+      projectDescriptionEl.value = configState.metadata.description || '';
+      defaultProviderEl.value = configState.models.default.provider || '';
+      defaultModelEl.value = configState.models.default.name || '';
+      securityThresholdEl.value = configState.security.approvalRules.auditScoreThreshold ?? '';
+      securityEscalationEl.checked = !!configState.security.approvalRules.onEscalation;
+      securityRolesEl.value = (configState.security.approvalRoles || []).join(', ');
+      securityTeamsEl.value = (configState.security.allowedAccessTeams || []).join(', ');
+      securityApiKeyEl.checked = !!configState.security.allowApiKeyAuth;
+      renderAgents();
+      renderFeatures();
+      renderModels();
+      renderChannels();
+      syncRawEditor();
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;');
+    }
+
+    function updateStateFromForm() {
+      ensureConfigShape();
+      configState.metadata.name = projectNameEl.value.trim();
+      configState.metadata.version = projectVersionEl.value.trim();
+      configState.metadata.orgId = projectOrgEl.value.trim();
+      configState.metadata.description = projectDescriptionEl.value.trim();
+      configState.models.default.provider = defaultProviderEl.value.trim();
+      configState.models.default.name = defaultModelEl.value.trim();
+      configState.models.default.config = configState.models.default.config || {};
+      configState.models.default.config.useAIGateway = !!configState.features.aiGatewayIntegration;
+      configState.security.approvalRules.auditScoreThreshold = securityThresholdEl.value === '' ? undefined : Number(securityThresholdEl.value);
+      configState.security.approvalRules.onEscalation = securityEscalationEl.checked;
+      configState.security.approvalRoles = commaSplit(securityRolesEl.value);
+      configState.security.allowedAccessTeams = commaSplit(securityTeamsEl.value);
+      configState.security.allowApiKeyAuth = securityApiKeyEl.checked;
+      configState.metadata.updatedAt = new Date().toISOString();
+      syncRawEditor();
+    }
+
+    function updateStateFromRawEditor() {
+      try {
+        configState = JSON.parse(jsonEditorEl.value);
+        renderForm();
+        setStatus('Raw JSON applied.');
+        return true;
+      } catch (err) {
+        setStatus('Raw JSON parse error: ' + (err.message || 'Invalid JSON'), true);
+        return false;
+      }
+    }
+
+    async function loadConfig() {
+      try {
+        const res = await fetch('/config');
+        if (res.status === 404) {
+          configState = createDefaultConfig();
+          renderForm();
+          setStatus('No config found. Started a new editable config.');
+          return;
+        }
+        if (!res.ok) throw new Error('Failed to load config');
+        const data = await res.json();
+        configState = data.config || createDefaultConfig();
+        renderForm();
+        setStatus('Config loaded.');
+      } catch (err) {
+        configState = createDefaultConfig();
+        renderForm();
+        setStatus('Load failed: ' + (err.message || 'Unknown error'), true);
+      }
+    }
+
+    async function validateConfig() {
+      const payload = updateStateFromRawEditor() ? configState : null;
+      if (!payload) return;
+      try {
+        const res = await fetch('/config/validate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error((data.errors || []).join('; ') || data.error || 'Validation failed');
+        }
+        setStatus('Validation passed.');
+      } catch (err) {
+        setStatus('Validation failed: ' + (err.message || 'Unknown error'), true);
+      }
+    }
+
+    async function saveConfig() {
+      const payload = updateStateFromRawEditor() ? configState : null;
+      if (!payload) return;
+      try {
+        const res = await fetch('/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error((data.errors || []).join('; ') || data.error || 'Save failed');
+        }
+        configState = data.config || payload;
+        renderForm();
+        setStatus('Config saved as version ' + (data.version || configState.metadata.version) + '.');
+      } catch (err) {
+        setStatus('Save failed: ' + (err.message || 'Unknown error'), true);
+      }
+    }
+
+    document.addEventListener('input', (event) => {
+      if (!configState) return;
+      const target = event.target;
+      if (target === jsonEditorEl) return;
+
+      if (target.dataset.agentName) {
+        configState.agents[target.dataset.agentName].name = target.value;
+      }
+      if (target.dataset.agentPrompt) {
+        configState.agents[target.dataset.agentPrompt].systemPrompt = target.value;
+      }
+      if (target.dataset.featureKey) {
+        configState.features[target.dataset.featureKey] = !!target.checked;
+      }
+      if (target.dataset.modelProvider) {
+        configState.models.byAgent[target.dataset.modelProvider].provider = target.value;
+      }
+      if (target.dataset.modelName) {
+        configState.models.byAgent[target.dataset.modelName].name = target.value;
+      }
+      updateStateFromForm();
+    });
+
+    document.addEventListener('change', (event) => {
+      if (!configState) return;
+      const target = event.target;
+
+      if (target.dataset.agentEnabled) {
+        configState.agents[target.dataset.agentEnabled].enabled = !!target.checked;
+      }
+      if (target.dataset.modelGateway) {
+        const route = configState.models.byAgent[target.dataset.modelGateway];
+        route.config = route.config || {};
+        route.config.useAIGateway = !!target.checked;
+      }
+      if (target.dataset.channelKey) {
+        configState.channels[target.dataset.channelKey].enabled = !!target.checked;
+      }
+      if (target === jsonEditorEl) {
+        updateStateFromRawEditor();
+        return;
+      }
+      updateStateFromForm();
+    });
+
+    validateBtn.addEventListener('click', validateConfig);
+    saveBtn.addEventListener('click', saveConfig);
+
+    loadConfig();
+  </script>
+</body>
+</html>`;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -1090,7 +1719,9 @@ export default {
       const url = new URL(request.url);
       const { pathname, origin } = url;
       const baseUrl = origin;
-      const browserAuth = isBrowserFacingRoute(pathname) ? authenticateRequest(request, env) : null;
+      const browserAuth = isBrowserFacingRoute(pathname) || isConfigApiRoute(pathname)
+        ? authenticateRequest(request, env)
+        : null;
 
       // ── GET /health ───────────────────────────────────────────────────────
       // Lightweight liveness probe: process is up and serving requests.
@@ -1157,7 +1788,31 @@ export default {
         });
       }
 
-      if (isApiKeyOnlyRoute(pathname)) {
+      // ── GET /config-ui ─────────────────────────────────────────────────────
+      // Browser-facing configuration editor.
+      if (request.method === "GET" && pathname === "/config-ui") {
+        if (!browserAuth?.isAuthenticated) {
+          return json({ ok: false, error: "Unauthorized." }, 401);
+        }
+        return new Response(renderConfigPage(), {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+      }
+
+      if (isConfigApiRoute(pathname)) {
+        if (!browserAuth?.isAuthenticated) {
+          const configuredApiKey = getConfiguredApiKey(env);
+          if (!configuredApiKey) {
+            console.error("Protected routes requested but API key is not configured", { pathname });
+            return json({ ok: false, error: "Server auth is not configured." }, 500);
+          }
+
+          if (!hasValidApiKey(request, configuredApiKey)) {
+            return json({ ok: false, error: "Unauthorized." }, 401);
+          }
+        }
+      } else if (isApiKeyOnlyRoute(pathname)) {
         const configuredApiKey = getConfiguredApiKey(env);
         if (!configuredApiKey) {
           console.error("Protected routes requested but API key is not configured", { pathname });
@@ -1248,7 +1903,10 @@ export default {
         const historyEntry: ConfigChangeEntry = {
           timestamp: new Date().toISOString(),
           version: newConfig.metadata.version,
-          actor: "api",
+          actor:
+            browserAuth?.mode === "access-browser" && browserAuth.userId
+              ? browserAuth.userId
+              : "api",
           summary: `Config updated to v${newConfig.metadata.version}`,
         };
         await appendConfigHistory(env.R2_ARTIFACTS, historyEntry);
@@ -1884,6 +2542,7 @@ export default {
             "GET  /chat",
             "GET  /system",
             "GET  /tasks-console",
+            "GET  /config-ui",
             "GET  /config",
             "POST /config/validate",
             "PUT  /config",

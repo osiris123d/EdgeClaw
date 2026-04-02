@@ -4,17 +4,46 @@
  * EdgeClaw configuration model, validation, and R2 storage helpers.
  */
 
+export type AIGatewayRouteClass = "utility" | "tools" | "reasoning" | "vision";
+
+export interface EdgeClawModelConfig {
+  provider: string;
+  name: string;
+  config?: Record<string, unknown>;
+  useAIGateway?: boolean;
+  routeClass?: AIGatewayRouteClass;
+}
+
+export interface EdgeClawAIGatewayRouteClassConfig {
+  enabled: boolean;
+  route: string;
+  model?: string;
+  description?: string;
+  headers?: Record<string, string>;
+}
+
+export interface EdgeClawAIGatewaySelectionRule {
+  routeClass: AIGatewayRouteClass;
+  taskTypes?: string[];
+  workflowTypes?: string[];
+  agentRoles?: string[];
+}
+
+export interface EdgeClawAIGatewayConfig {
+  enabled: boolean;
+  baseUrl?: string;
+  defaultRouteClass?: AIGatewayRouteClass;
+  routeClasses: Record<AIGatewayRouteClass, EdgeClawAIGatewayRouteClassConfig>;
+  selectionRules?: EdgeClawAIGatewaySelectionRule[];
+}
+
 export interface AgentPersona {
   name: string;
   systemPrompt?: string;
   enabled: boolean;
   capabilities?: string[];
   allowedTools?: string[];
-  model?: {
-    provider: string;
-    name: string;
-    config?: Record<string, unknown>;
-  };
+  model?: EdgeClawModelConfig;
   custom?: Record<string, unknown>;
 }
 
@@ -46,26 +75,16 @@ export interface EdgeClawConfig {
   };
 
   models: {
-    default: {
-      provider: string;
-      name: string;
-      config?: Record<string, unknown>;
-    };
+    default: EdgeClawModelConfig;
     byTaskType?: {
-      [taskType: string]: {
-        provider: string;
-        name: string;
-        config?: Record<string, unknown>;
-      };
+      [taskType: string]: EdgeClawModelConfig;
     };
     byAgent?: {
-      [agentName: string]: {
-        provider: string;
-        name: string;
-        config?: Record<string, unknown>;
-      };
+      [agentName: string]: EdgeClawModelConfig;
     };
   };
+
+  aiGateway?: EdgeClawAIGatewayConfig;
 
   channels: {
     [key: string]: Record<string, unknown>;

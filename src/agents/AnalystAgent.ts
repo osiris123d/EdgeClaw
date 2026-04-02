@@ -10,6 +10,8 @@
  */
 
 import { TaskPacket, WorklogEntry as CoreWorklogEntry } from "../lib/core-task-schema";
+import { selectAIGatewayRoute } from "../lib/ai-gateway-routing";
+import { EdgeClawConfig } from "../lib/edgeclaw-config";
 import { logAgentEvent } from "../lib/logger";
 import { appendWorklogEntry } from "../lib/r2";
 import { AgentContext, AgentResult, AnalysisOutput, Env, TaskInput } from "../lib/types";
@@ -145,6 +147,9 @@ export const SAMPLE_WIFI_NAC_ANALYSIS_RESULT: AnalystStructuredOutput = {
 };
 
 export class AnalystAgent {
+  private static readonly CONFIG_KEY = "org/hilton/config/edgeclaw-current.json";
+  private static readonly ENV_FALLBACK_ROUTE_CLASS = "reasoning";
+
   /**
    * Backward-compatible wrapper for older workflow integration.
    */
@@ -228,10 +233,18 @@ export class AnalystAgent {
    * Primary Prompt 7 execution path.
    */
   async analyzeTask(env: Env, input: AnalystTaskInput): Promise<AgentResult<AnalystStructuredOutput>> {
+    let selectedRouteClass: string | null = null;
+    let selectedMode: "deterministic" | "ai-gateway" = "deterministic";
+
     try {
       logAgentEvent(env, "analyst", "start", {
         taskId: input.task.taskId,
         message: "Starting analysis",
+        data: {
+          taskType: input.task.taskType,
+          routeClass: selectedRouteClass,
+          mode: selectedMode,
+        },
       });
 
       const deterministic = this.deterministicAnalyze(input);
@@ -241,13 +254,17 @@ export class AnalystAgent {
       const aiWarnings: string[] = [];
 
       if (deterministic.confidence < 0.75) {
-        const ai = await this.callAIGateway(env, buildAnalysisPrompt(input));
-        if (ai) {
-          const merged = mergeWithAiText(deterministic, ai);
+        const ai = await this.callAIGateway(env, input, buildAnalysisPrompt(input));
+        if (ai?.text) {
+          const merged = mergeWithAiText(deterministic, ai.text);
           output = merged;
           mode = "ai_assisted";
+          selectedMode = "ai-gateway";
+          selectedRouteClass = ai.routeClass;
         } else {
           aiWarnings.push("AI Gateway unavailable; deterministic analysis used.");
+          selectedMode = "deterministic";
+          selectedRouteClass = ai?.routeClass ?? null;
         }
       }
 
@@ -263,7 +280,9 @@ export class AnalystAgent {
         taskId: input.task.taskId,
         message: "Analysis complete",
         data: {
-          mode,
+          mode: selectedMode,
+          taskType: input.task.taskType,
+          routeClass: selectedRouteClass,
           confidence: output.confidence,
           findingCount: output.facts.length,
         },
@@ -279,7 +298,12 @@ export class AnalystAgent {
       logAgentEvent(env, "analyst", "error", {
         taskId: input.task.taskId,
         message: "Analysis failed",
-        data: { error: toErrorMessage(error) },
+        data: {
+          error: toErrorMessage(error),
+          taskType: input.task.taskType,
+          routeClass: selectedRouteClass,
+          mode: selectedMode,
+        },
       });
 
       const failEntry = createAnalystFailureWorklogEntry(input.task.taskId, toErrorMessage(error));
@@ -295,14 +319,31 @@ export class AnalystAgent {
     }
   }
 
-  private async callAIGateway(env: Env, prompt: string): Promise<string | null> {
-    const baseUrl = env.AI_GATEWAY_BASE_URL;
-    const token = env.AI_GATEWAY_TOKEN;
-    const route = env.AI_GATEWAY_ROUTE_ANALYST;
+  private async callAIGateway(
+    env: Env,
+    input: AnalystTaskInput,
+    prompt: string
+  ): Promise<{ text: string | null; routeClass: string | null }> {
+    const config = await this.loadEdgeClawConfig(env);
+    const selected = selectAIGatewayRoute(config, {
+      taskType: input.task.taskType,
+      workflowType: "analysis",
+      agentRole: "analyst",
+    });
 
-    if (!baseUrl || !token || !route) {
-      // TODO: Provide AI Gateway credentials/routes in Wrangler vars for live model execution.
-      return null;
+    const token = env.AI_GATEWAY_TOKEN;
+    if (!token) {
+      return { text: null, routeClass: selected.routeClass };
+    }
+
+    // Prefer config-driven mapping, but preserve current env-var behavior when
+    // config is missing/disabled/incomplete.
+    const baseUrl = selected.enabled ? selected.baseUrl : env.AI_GATEWAY_BASE_URL ?? null;
+    const route = selected.enabled ? selected.route : env.AI_GATEWAY_ROUTE_ANALYST ?? null;
+    const routeClass = selected.enabled ? selected.routeClass : AnalystAgent.ENV_FALLBACK_ROUTE_CLASS;
+
+    if (!baseUrl || !route) {
+      return { text: null, routeClass };
     }
 
     const url = `${baseUrl.replace(/\/$/, "")}/${route}`;
@@ -317,6 +358,12 @@ export class AnalystAgent {
           { role: "system", content: "You are an enterprise analyst." },
           { role: "user", content: prompt },
         ],
+        metadata: {
+          taskId: input.task.taskId,
+          agentRole: "analyst",
+          taskType: input.task.taskType,
+          routeClass,
+        },
       }),
     });
 
@@ -326,7 +373,20 @@ export class AnalystAgent {
     }
 
     const raw = (await response.json()) as Record<string, unknown>;
-    return extractModelText(raw);
+    return {
+      text: extractModelText(raw),
+      routeClass,
+    };
+  }
+
+  private async loadEdgeClawConfig(env: Env): Promise<EdgeClawConfig | null> {
+    try {
+      const obj = await env.R2_ARTIFACTS.get(AnalystAgent.CONFIG_KEY);
+      if (!obj) return null;
+      return await obj.json<EdgeClawConfig>();
+    } catch {
+      return null;
+    }
   }
 
   private deterministicAnalyze(input: AnalystTaskInput): AnalystStructuredOutput {
