@@ -15,6 +15,7 @@
  */
 
 import { TaskCoordinatorDO } from "./durable/TaskCoordinatorDO";
+import { routeAgentRequest } from "agents";
 import {
   coordinatorInitialize,
   coordinatorAcquireLease,
@@ -26,6 +27,7 @@ import { TaskPacket, TaskType, DomainType } from "./lib/core-task-schema";
 import { TaskWorkflow } from "./workflows/TaskWorkflow";
 import { AuditStructuredOutput } from "./agents/AuditAgent";
 import { DispatcherAgent } from "./agents/DispatcherAgent";
+import { ChatAgentImpl } from "./agents/ChatAgentImpl";
 import {
   ApprovalRecord,
   ApprovalDecisionRequest,
@@ -49,7 +51,7 @@ import {
   sseEvent,
 } from "./lib/chat";
 
-export { TaskCoordinatorDO };
+export { TaskCoordinatorDO, ChatAgentImpl };
 
 // ─── Route patterns ───────────────────────────────────────────────────────────
 
@@ -70,7 +72,9 @@ function validateCriticalEnv(env: Env): string[] {
 }
 
 function isProtectedApiPath(pathname: string): boolean {
-  return pathname.startsWith("/tasks") || pathname.startsWith("/api");
+  // Keep /tasks protected and explicitly include Agents SDK namespace.
+  // /api remains protected for existing chat/API endpoints.
+  return pathname.startsWith("/tasks") || pathname.startsWith("/api/agents") || pathname.startsWith("/api");
 }
 
 function getConfiguredApiKey(env: Env): string | undefined {
@@ -172,6 +176,11 @@ export default {
           return json({ ok: false, error: "Unauthorized." }, 401);
         }
       }
+
+      // Route Cloudflare Agents SDK requests before custom app routing.
+      // Return directly to preserve WebSocket upgrades and stream semantics.
+      const agentResponse = await routeAgentRequest(request, env, { prefix: "/api/agents" });
+      if (agentResponse) return agentResponse;
 
       // ── GET /chat ──────────────────────────────────────────────────────────
       // Minimal frontend entrypoint. No bundler or React runtime required.

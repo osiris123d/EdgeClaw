@@ -1,6 +1,7 @@
 name = "cloudflare-agent"
 main = "src/index.ts"
 compatibility_date = "2025-03-31"
+compatibility_flags = ["nodejs_compat"]
 preview_urls = false
 
 # Observability & logging
@@ -27,6 +28,10 @@ AUTO_START_WORKFLOW = "false"
 name = "TASK_COORDINATOR"
 class_name = "TaskCoordinatorDO"
 
+[[env.production.durable_objects.bindings]]
+name = "CHAT_AGENT"
+class_name = "ChatAgentImpl"
+
 [[env.production.r2_buckets]]
 binding = "R2_ARTIFACTS"
 bucket_name = "agent-artifacts-prod"
@@ -49,6 +54,10 @@ AUTO_START_WORKFLOW = "false"
 name = "TASK_COORDINATOR"
 class_name = "TaskCoordinatorDO"
 
+[[env.development.durable_objects.bindings]]
+name = "CHAT_AGENT"
+class_name = "ChatAgentImpl"
+
 [[env.development.r2_buckets]]
 binding = "R2_ARTIFACTS"
 bucket_name = "agent-artifacts-dev"
@@ -61,6 +70,10 @@ bucket_name = "agent-worklogs-dev"
 [[migrations]]
 tag = "v1"
 new_classes = ["TaskCoordinatorDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["ChatAgentImpl"]
 
 # Workflows (optional, Phase 3)
 # [workflows]

@@ -15,7 +15,11 @@
     "lint": "eslint src --ext .ts"
   },
   "dependencies": {
-    "@cloudflare/workers-types": "^4.20241203.0"
+    "@cloudflare/ai-chat": "^0.3.2",
+    "@cloudflare/workers-types": "^4.20241203.0",
+    "agents": "^0.9.0",
+    "ai": "^6.0.143",
+    "workers-ai-provider": "^3.1.9"
   },
   "devDependencies": {
     "@testing-library/dom": "^10.4.0",
