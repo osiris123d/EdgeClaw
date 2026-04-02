@@ -124,6 +124,7 @@ export function validateEdgeClawConfig(obj: unknown): {
   config?: EdgeClawConfig;
 } {
   const errors: string[] = [];
+  const validRouteClasses: AIGatewayRouteClass[] = ["utility", "tools", "reasoning", "vision"];
 
   if (!obj || typeof obj !== "object") {
     return { ok: false, errors: ["Config must be an object"] };
@@ -177,8 +178,55 @@ export function validateEdgeClawConfig(obj: unknown): {
     errors.push("channels is required and must be an object");
   }
 
+  if (cfg.aiGateway !== undefined) {
+    if (typeof cfg.aiGateway !== "object" || cfg.aiGateway === null) {
+      errors.push("aiGateway must be an object when provided");
+    } else {
+      const aiGateway = cfg.aiGateway as Record<string, unknown>;
+      const routeClasses = aiGateway.routeClasses;
+      if (routeClasses !== undefined) {
+        if (typeof routeClasses !== "object" || routeClasses === null) {
+          errors.push("aiGateway.routeClasses must be an object");
+        } else {
+          for (const routeClass of validRouteClasses) {
+            const entry = (routeClasses as Record<string, unknown>)[routeClass];
+            if (entry === undefined) continue;
+            if (typeof entry !== "object" || entry === null) {
+              errors.push(`aiGateway.routeClasses.${routeClass} must be an object`);
+              continue;
+            }
+            const routeObj = entry as Record<string, unknown>;
+            if (typeof routeObj.enabled !== "boolean") {
+              errors.push(`aiGateway.routeClasses.${routeClass}.enabled must be a boolean`);
+            }
+            if (typeof routeObj.route !== "string" || routeObj.route.trim().length === 0) {
+              errors.push(`aiGateway.routeClasses.${routeClass}.route must be a non-empty string`);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // Business logic validation
   const baseCfg = cfg as Partial<EdgeClawConfig>;
+
+  const analystCfg = baseCfg.models?.byAgent?.analyst;
+  if (analystCfg?.routeClass && !validRouteClasses.includes(analystCfg.routeClass)) {
+    errors.push("models.byAgent.analyst.routeClass must be one of: utility, tools, reasoning, vision.");
+  }
+
+  if (analystCfg?.useAIGateway) {
+    if (!analystCfg.routeClass) {
+      errors.push("models.byAgent.analyst.routeClass is required when analyst useAIGateway is enabled.");
+    } else {
+      const selectedClassCfg = baseCfg.aiGateway?.routeClasses?.[analystCfg.routeClass];
+      if (!selectedClassCfg) {
+        errors.push(`aiGateway.routeClasses.${analystCfg.routeClass} must be configured when analyst useAIGateway is enabled.`);
+      }
+    }
+  }
+
   if (!baseCfg.features?.approvalWorkflows && baseCfg.security?.approvalRoles?.length) {
     errors.push("Cannot have approval roles when approvalWorkflows is disabled");
   }

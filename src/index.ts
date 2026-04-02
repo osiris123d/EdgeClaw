@@ -1311,6 +1311,33 @@ function renderConfigPage(): string {
               </div>
             </div>
           </div>
+
+          <div class="route-card">
+            <div class="grid">
+              <div class="field check-item" style="margin-top: 24px;">
+                <input id="analyst-use-gateway" type="checkbox" />
+                <label for="analyst-use-gateway" style="margin: 0; text-transform: none; letter-spacing: 0;">Analyst use AI Gateway</label>
+              </div>
+              <div class="field">
+                <label for="analyst-route-class">Analyst Route Class</label>
+                <select id="analyst-route-class">
+                  <option value="utility">utility</option>
+                  <option value="tools">tools</option>
+                  <option value="reasoning">reasoning</option>
+                  <option value="vision">vision</option>
+                </select>
+              </div>
+              <div class="field check-item" style="margin-top: 24px;">
+                <input id="selected-route-enabled" type="checkbox" />
+                <label for="selected-route-enabled" style="margin: 0; text-transform: none; letter-spacing: 0;">Selected class enabled</label>
+              </div>
+              <div class="field">
+                <label for="selected-route-name">Selected Class Gateway Route</label>
+                <input id="selected-route-name" type="text" />
+              </div>
+            </div>
+          </div>
+
           <div id="models-panel"></div>
           <p class="hint">AI Gateway flags are stored on the model config as <code>useAIGateway</code> where applicable, and globally via the feature flag.</p>
         </section>
@@ -1369,6 +1396,10 @@ function renderConfigPage(): string {
     const projectDescriptionEl = document.getElementById('project-description');
     const defaultProviderEl = document.getElementById('default-provider');
     const defaultModelEl = document.getElementById('default-model');
+    const analystUseGatewayEl = document.getElementById('analyst-use-gateway');
+    const analystRouteClassEl = document.getElementById('analyst-route-class');
+    const selectedRouteEnabledEl = document.getElementById('selected-route-enabled');
+    const selectedRouteNameEl = document.getElementById('selected-route-name');
     const securityThresholdEl = document.getElementById('security-threshold');
     const securityEscalationEl = document.getElementById('security-escalation');
     const securityRolesEl = document.getElementById('security-roles');
@@ -1416,9 +1447,19 @@ function renderConfigPage(): string {
         models: {
           default: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
           byAgent: {
-            analyst: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
+            analyst: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', useAIGateway: false, routeClass: 'reasoning' },
             dispatcher: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } },
             chat: { provider: 'cloudflare-ai', name: '@cf/meta/llama-3.1-8b-instruct', config: { useAIGateway: false } }
+          }
+        },
+        aiGateway: {
+          enabled: false,
+          defaultRouteClass: 'utility',
+          routeClasses: {
+            utility: { enabled: true, route: 'utility' },
+            tools: { enabled: true, route: 'tools' },
+            reasoning: { enabled: true, route: 'reasoning' },
+            vision: { enabled: false, route: 'vision' }
           }
         },
         channels: {
@@ -1459,6 +1500,18 @@ function renderConfigPage(): string {
       configState.models = configState.models || {};
       configState.models.default = configState.models.default || { provider: '', name: '', config: {} };
       configState.models.byAgent = configState.models.byAgent || {};
+      configState.models.byAgent.analyst = configState.models.byAgent.analyst || {
+        provider: 'cloudflare-ai',
+        name: '@cf/meta/llama-3.1-8b-instruct',
+        useAIGateway: false,
+        routeClass: 'reasoning'
+      };
+      configState.aiGateway = configState.aiGateway || {};
+      configState.aiGateway.routeClasses = configState.aiGateway.routeClasses || {};
+      configState.aiGateway.routeClasses.utility = configState.aiGateway.routeClasses.utility || { enabled: true, route: 'utility' };
+      configState.aiGateway.routeClasses.tools = configState.aiGateway.routeClasses.tools || { enabled: true, route: 'tools' };
+      configState.aiGateway.routeClasses.reasoning = configState.aiGateway.routeClasses.reasoning || { enabled: true, route: 'reasoning' };
+      configState.aiGateway.routeClasses.vision = configState.aiGateway.routeClasses.vision || { enabled: false, route: 'vision' };
       configState.channels = configState.channels || {};
       configState.security = configState.security || {};
       configState.security.approvalRules = configState.security.approvalRules || {};
@@ -1536,6 +1589,13 @@ function renderConfigPage(): string {
       projectDescriptionEl.value = configState.metadata.description || '';
       defaultProviderEl.value = configState.models.default.provider || '';
       defaultModelEl.value = configState.models.default.name || '';
+      const analystModel = configState.models.byAgent.analyst || {};
+      const analystRouteClass = analystModel.routeClass || 'reasoning';
+      analystUseGatewayEl.checked = !!analystModel.useAIGateway;
+      analystRouteClassEl.value = analystRouteClass;
+      const selectedRouteCfg = configState.aiGateway.routeClasses[analystRouteClass] || { enabled: false, route: '' };
+      selectedRouteEnabledEl.checked = !!selectedRouteCfg.enabled;
+      selectedRouteNameEl.value = selectedRouteCfg.route || '';
       securityThresholdEl.value = configState.security.approvalRules.auditScoreThreshold ?? '';
       securityEscalationEl.checked = !!configState.security.approvalRules.onEscalation;
       securityRolesEl.value = (configState.security.approvalRoles || []).join(', ');
@@ -1566,6 +1626,15 @@ function renderConfigPage(): string {
       configState.models.default.name = defaultModelEl.value.trim();
       configState.models.default.config = configState.models.default.config || {};
       configState.models.default.config.useAIGateway = !!configState.features.aiGatewayIntegration;
+      configState.models.byAgent.analyst = configState.models.byAgent.analyst || {};
+      configState.models.byAgent.analyst.useAIGateway = !!analystUseGatewayEl.checked;
+      configState.models.byAgent.analyst.routeClass = analystRouteClassEl.value;
+      const selectedClass = analystRouteClassEl.value;
+      configState.aiGateway = configState.aiGateway || {};
+      configState.aiGateway.routeClasses = configState.aiGateway.routeClasses || {};
+      configState.aiGateway.routeClasses[selectedClass] = configState.aiGateway.routeClasses[selectedClass] || {};
+      configState.aiGateway.routeClasses[selectedClass].enabled = !!selectedRouteEnabledEl.checked;
+      configState.aiGateway.routeClasses[selectedClass].route = selectedRouteNameEl.value.trim();
       configState.security.approvalRules.auditScoreThreshold = securityThresholdEl.value === '' ? undefined : Number(securityThresholdEl.value);
       configState.security.approvalRules.onEscalation = securityEscalationEl.checked;
       configState.security.approvalRoles = commaSplit(securityRolesEl.value);
@@ -1674,6 +1743,14 @@ function renderConfigPage(): string {
     document.addEventListener('change', (event) => {
       if (!configState) return;
       const target = event.target;
+
+      if (target === analystRouteClassEl) {
+        configState.models.byAgent = configState.models.byAgent || {};
+        configState.models.byAgent.analyst = configState.models.byAgent.analyst || {};
+        configState.models.byAgent.analyst.routeClass = analystRouteClassEl.value;
+        renderForm();
+        return;
+      }
 
       if (target.dataset.agentEnabled) {
         configState.agents[target.dataset.agentEnabled].enabled = !!target.checked;
