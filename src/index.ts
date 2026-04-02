@@ -22,6 +22,7 @@ import {
 } from "./durable/TaskCoordinatorDO";
 import { normalizeTaskRequest, validateTaskRequest } from "./lib/task-schema";
 import { Env } from "./lib/types";
+import { authenticateRequest, hasValidApiKey } from "./lib/auth";
 import { putTask, getTask, listWorklogEntries, getArtifact } from "./lib/r2";
 import { TaskPacket, TaskType, DomainType } from "./lib/core-task-schema";
 import { TaskWorkflow } from "./workflows/TaskWorkflow";
@@ -77,6 +78,14 @@ function isProtectedApiPath(pathname: string): boolean {
   return pathname.startsWith("/tasks") || pathname.startsWith("/api/agents") || pathname.startsWith("/api");
 }
 
+function isBrowserFacingRoute(pathname: string): boolean {
+  return pathname === "/chat" || pathname.startsWith("/api/chat/") || pathname === "/api/chat/sessions" || pathname.startsWith("/api/agents/");
+}
+
+function isApiKeyOnlyRoute(pathname: string): boolean {
+  return pathname.startsWith("/tasks");
+}
+
 function getConfiguredApiKey(env: Env): string | undefined {
   const vars = env as unknown as Record<string, unknown>;
   const key =
@@ -86,18 +95,6 @@ function getConfiguredApiKey(env: Env): string | undefined {
   if (!key) return undefined;
   const trimmed = key.trim();
   return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function hasValidApiKey(request: Request, expectedApiKey: string): boolean {
-  const xApiKey = request.headers.get("x-api-key")?.trim();
-  if (xApiKey && xApiKey === expectedApiKey) return true;
-
-  const authorization = request.headers.get("authorization")?.trim();
-  if (!authorization) return false;
-
-  const match = /^Bearer\s+(.+)$/i.exec(authorization);
-  const bearerToken = match?.[1]?.trim();
-  return !!bearerToken && bearerToken === expectedApiKey;
 }
 
 export default {
@@ -117,6 +114,7 @@ export default {
       const url = new URL(request.url);
       const { pathname, origin } = url;
       const baseUrl = origin;
+      const browserAuth = isBrowserFacingRoute(pathname) ? authenticateRequest(request, env) : null;
 
       // ── GET /health ───────────────────────────────────────────────────────
       // Lightweight liveness probe: process is up and serving requests.
@@ -165,7 +163,21 @@ export default {
         return json({ ok: ready, checks, errors: errors.length > 0 ? errors : undefined }, ready ? 200 : 503);
       }
 
-      if (isProtectedApiPath(pathname)) {
+      if (isApiKeyOnlyRoute(pathname)) {
+        const configuredApiKey = getConfiguredApiKey(env);
+        if (!configuredApiKey) {
+          console.error("Protected routes requested but API key is not configured", { pathname });
+          return json({ ok: false, error: "Server auth is not configured." }, 500);
+        }
+
+        if (!hasValidApiKey(request, configuredApiKey)) {
+          return json({ ok: false, error: "Unauthorized." }, 401);
+        }
+      } else if (isBrowserFacingRoute(pathname)) {
+        if (!browserAuth?.isAuthenticated) {
+          return json({ ok: false, error: "Unauthorized." }, 401);
+        }
+      } else if (isProtectedApiPath(pathname)) {
         const configuredApiKey = getConfiguredApiKey(env);
         if (!configuredApiKey) {
           console.error("Protected routes requested but API key is not configured", { pathname });
@@ -199,7 +211,12 @@ export default {
           return parsed.response;
         }
         const body = parsed.body as Record<string, unknown>;
-        const userId = typeof body.userId === "string" && body.userId ? body.userId : "anonymous-user";
+        const userId =
+          browserAuth?.mode === "access-browser" && browserAuth.userId
+            ? browserAuth.userId
+            : typeof body.userId === "string" && body.userId
+              ? body.userId
+              : "anonymous-user";
         const title = typeof body.title === "string" ? body.title : "New chat";
         const session = createChatSession(userId, title);
         const saved = await putChatSession(env.R2_ARTIFACTS, session);
@@ -241,7 +258,12 @@ export default {
         }
         const body = parsed.body as Record<string, unknown>;
         const content = typeof body.content === "string" ? body.content.trim() : "";
-        const userId = typeof body.userId === "string" && body.userId ? body.userId : session.userId;
+        const userId =
+          browserAuth?.mode === "access-browser" && browserAuth.userId
+            ? browserAuth.userId
+            : typeof body.userId === "string" && body.userId
+              ? body.userId
+              : session.userId;
 
         if (!content) {
           return json({ ok: false, error: "content is required." }, 400);

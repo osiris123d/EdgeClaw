@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ChatAgentImpl Smoke Test</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f4f1ea;
+      --panel: #fffdf8;
+      --border: #d8cfbf;
+      --text: #1e1c18;
+      --muted: #6d665b;
+      --user: #d9efe3;
+      --assistant: #efe7d9;
+      --accent: #2f6f56;
+      --danger: #8d2f2f;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font: 15px/1.5 Georgia, "Times New Roman", serif;
+      color: var(--text);
+      background: linear-gradient(180deg, #eee7db 0%, var(--bg) 100%);
+    }
+
+    .wrap {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 8px 24px rgba(44, 37, 24, 0.08);
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.1;
+    }
+
+    .subtle {
+      color: var(--muted);
+      margin: 0 0 16px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    input,
+    textarea,
+    button {
+      width: 100%;
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      background: white;
+      color: var(--text);
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+    }
+
+    button {
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      border-color: var(--accent);
+    }
+
+    button.secondary {
+      background: transparent;
+      color: var(--text);
+      border-color: var(--border);
+    }
+
+    .row {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .row > * {
+      flex: 1;
+    }
+
+    .status {
+      margin: 14px 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .status.error {
+      color: var(--danger);
+    }
+
+    .history {
+      margin-top: 16px;
+      display: grid;
+      gap: 10px;
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 6px;
+    }
+
+    .msg {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      white-space: pre-wrap;
+    }
+
+    .msg.user {
+      background: var(--user);
+    }
+
+    .msg.assistant {
+      background: var(--assistant);
+    }
+
+    .msg.system {
+      background: #f3f3f3;
+    }
+
+    .meta {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    code {
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="panel">
+      <h1>ChatAgentImpl Smoke Test</h1>
+      <p class="subtle">Minimal Phase 1 browser client for the SDK-backed <code>/api/agents</code> route.</p>
+
+      <div class="grid">
+        <div>
+          <label for="origin">Worker Origin</label>
+          <input id="origin" value="https://cloudflare-agent-production.duane-larson.workers.dev" />
+        </div>
+        <div>
+          <label for="instance">Agent Instance</label>
+          <input id="instance" value="smoke-phase1" />
+        </div>
+        <div>
+          <label for="userId">User ID</label>
+          <input id="userId" value="smoke-user" />
+        </div>
+      </div>
+
+      <div>
+        <label for="apiKey">API Key</label>
+        <input id="apiKey" type="password" placeholder="Required for get-messages fetch; browser WS cannot send this header." />
+      </div>
+
+      <div style="margin-top: 16px;">
+        <label for="message">Message</label>
+        <textarea id="message" placeholder="Draft CAB notes for a NAC policy rollback after a WiFi outage."></textarea>
+      </div>
+
+      <div class="row">
+        <button id="connectBtn" type="button">Connect</button>
+        <button id="loadBtn" class="secondary" type="button">Load History</button>
+        <button id="sendBtn" type="button">Send</button>
+      </div>
+
+      <div id="status" class="status">Idle.</div>
+      <div id="history" class="history"></div>
+    </div>
+  </div>
+
+  <script>
+    const originInput = document.getElementById("origin");
+    const instanceInput = document.getElementById("instance");
+    const userIdInput = document.getElementById("userId");
+    const apiKeyInput = document.getElementById("apiKey");
+    const messageInput = document.getElementById("message");
+    const statusEl = document.getElementById("status");
+    const historyEl = document.getElementById("history");
+    const connectBtn = document.getElementById("connectBtn");
+    const loadBtn = document.getElementById("loadBtn");
+    const sendBtn = document.getElementById("sendBtn");
+
+    let socket = null;
+    let history = [];
+    let pendingRequestId = null;
+    let currentAssistantId = null;
+
+    function agentHttpUrl() {
+      const origin = originInput.value.trim().replace(/\/$/, "");
+      const instance = encodeURIComponent(instanceInput.value.trim() || "default");
+      return `${origin}/api/agents/chat-agent-impl/${instance}`;
+    }
+
+    function agentWsUrl() {
+      const httpUrl = new URL(agentHttpUrl());
+      httpUrl.protocol = httpUrl.protocol === "https:" ? "wss:" : "ws:";
+
+      // Query param is included for future compatibility, but the current backend
+      // auth check only accepts headers. This means WebSocket auth may still need
+      // a backend auth adjustment before browser usage works in production.
+      const apiKey = apiKeyInput.value.trim();
+      if (apiKey) {
+        httpUrl.searchParams.set("apiKey", apiKey);
+      }
+      return httpUrl.toString();
+    }
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className = isError ? "status error" : "status";
+    }
+
+    function renderHistory() {
+      historyEl.innerHTML = "";
+      for (const message of history) {
+        const item = document.createElement("div");
+        item.className = `msg ${message.role || "system"}`;
+
+        const meta = document.createElement("span");
+        meta.className = "meta";
+        meta.textContent = `${message.role || "system"}${message.id ? ` • ${message.id}` : ""}`;
+
+        const body = document.createElement("div");
+        body.textContent = message.text || "";
+
+        item.appendChild(meta);
+        item.appendChild(body);
+        historyEl.appendChild(item);
+      }
+      historyEl.scrollTop = historyEl.scrollHeight;
+    }
+
+    function upsertMessage(next) {
+      const index = history.findIndex((msg) => msg.id === next.id);
+      if (index >= 0) {
+        history[index] = { ...history[index], ...next };
+      } else {
+        history.push(next);
+      }
+      renderHistory();
+    }
+
+    function appendLocalUserMessage(text) {
+      const id = crypto.randomUUID();
+      upsertMessage({ id, role: "user", text });
+      return id;
+    }
+
+    function ensureAssistantMessage(id) {
+      currentAssistantId = id;
+      const existing = history.find((msg) => msg.id === id);
+      if (!existing) {
+        upsertMessage({ id, role: "assistant", text: "" });
+      }
+    }
+
+    function appendAssistantText(id, chunkText) {
+      ensureAssistantMessage(id);
+      const current = history.find((msg) => msg.id === id);
+      upsertMessage({
+        id,
+        role: "assistant",
+        text: `${current?.text || ""}${chunkText}`,
+      });
+    }
+
+    function extractTextFromAiChunk(chunk) {
+      if (!chunk || typeof chunk !== "object") return "";
+
+      if (typeof chunk.text === "string") return chunk.text;
+      if (typeof chunk.content === "string") return chunk.content;
+      if (Array.isArray(chunk.parts)) {
+        return chunk.parts
+          .map((part) => {
+            if (!part || typeof part !== "object") return "";
+            if (part.type === "text" && typeof part.text === "string") return part.text;
+            if (part.type === "output_text" && typeof part.text === "string") return part.text;
+            return "";
+          })
+          .join("");
+      }
+      if (Array.isArray(chunk.delta)) {
+        return chunk.delta
+          .map((part) => (part && typeof part.text === "string" ? part.text : ""))
+          .join("");
+      }
+      return "";
+    }
+
+    function normalizeServerMessages(messages) {
+      return (messages || []).map((message) => ({
+        id: message.id || message.messageId || crypto.randomUUID(),
+        role: message.role || "assistant",
+        text: Array.isArray(message.parts)
+          ? message.parts
+              .map((part) => (part && part.type === "text" && typeof part.text === "string" ? part.text : ""))
+              .join("")
+          : typeof message.content === "string"
+            ? message.content
+            : "",
+      }));
+    }
+
+    async function loadHistory() {
+      const apiKey = apiKeyInput.value.trim();
+      const url = `${agentHttpUrl()}/get-messages`;
+      const headers = apiKey ? { "x-api-key": apiKey } : {};
+
+      setStatus("Loading message history...");
+      try {
+        const response = await fetch(url, { headers });
+        if (!response.ok) {
+          throw new Error(`History fetch failed: ${response.status} ${response.statusText}`);
+        }
+        const text = await response.text();
+        const parsed = text.trim() ? JSON.parse(text) : [];
+        history = normalizeServerMessages(parsed);
+        renderHistory();
+        setStatus("History loaded.");
+      } catch (error) {
+        setStatus(error.message || "Failed to load history.", true);
+      }
+    }
+
+    function connect() {
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        setStatus("WebSocket already connected.");
+        return;
+      }
+
+      const wsUrl = agentWsUrl();
+      setStatus(`Connecting to ${wsUrl} ...`);
+      socket = new WebSocket(wsUrl);
+
+      socket.addEventListener("open", () => {
+        setStatus("Connected.");
+      });
+
+      socket.addEventListener("close", () => {
+        setStatus("Disconnected.", true);
+      });
+
+      socket.addEventListener("error", () => {
+        setStatus("WebSocket error. If auth is enforced by header only, browser WS will fail until auth supports query/cookie flow.", true);
+      });
+
+      socket.addEventListener("message", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+
+          if (data.type === "cf_agent_chat_messages" && Array.isArray(data.messages)) {
+            history = normalizeServerMessages(data.messages);
+            renderHistory();
+            return;
+          }
+
+          if (data.type === "cf_agent_use_chat_response") {
+            if (!pendingRequestId || data.id !== pendingRequestId) {
+              return;
+            }
+
+            if (data.error) {
+              setStatus(data.body || "Stream error.", true);
+              return;
+            }
+
+            let text = "";
+            if (typeof data.body === "string" && data.body.trim()) {
+              try {
+                const chunk = JSON.parse(data.body);
+                text = extractTextFromAiChunk(chunk);
+              } catch {
+                text = data.body;
+              }
+            }
+
+            if (text) {
+              appendAssistantText(currentAssistantId || pendingRequestId, text);
+            }
+
+            if (data.done) {
+              setStatus("Response complete.");
+              pendingRequestId = null;
+              currentAssistantId = null;
+            } else {
+              setStatus("Streaming response...");
+            }
+          }
+        } catch {
+          setStatus("Received non-JSON message from socket.", true);
+        }
+      });
+    }
+
+    function sendMessage() {
+      const text = messageInput.value.trim();
+      if (!text) {
+        setStatus("Enter a message first.", true);
+        return;
+      }
+      if (!socket || socket.readyState !== WebSocket.OPEN) {
+        setStatus("Connect first.", true);
+        return;
+      }
+
+      appendLocalUserMessage(text);
+      pendingRequestId = crypto.randomUUID().slice(0, 8);
+      currentAssistantId = pendingRequestId;
+      ensureAssistantMessage(currentAssistantId);
+
+      const payload = {
+        type: "cf_agent_use_chat_request",
+        id: pendingRequestId,
+        init: {
+          method: "POST",
+          body: JSON.stringify({
+            messages: [
+              {
+                id: crypto.randomUUID(),
+                role: "user",
+                parts: [{ type: "text", text }],
+              },
+            ],
+            trigger: "submit-message",
+            userId: userIdInput.value.trim() || "smoke-user",
+          }),
+        },
+      };
+
+      socket.send(JSON.stringify(payload));
+      messageInput.value = "";
+      setStatus("Message sent.");
+    }
+
+    connectBtn.addEventListener("click", connect);
+    loadBtn.addEventListener("click", loadHistory);
+    sendBtn.addEventListener("click", sendMessage);
+  </script>
+</body>
+</html>

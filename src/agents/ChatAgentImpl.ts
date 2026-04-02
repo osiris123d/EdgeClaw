@@ -1,5 +1,7 @@
+import { getCurrentAgent } from "agents";
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import { DispatcherAgent } from "./DispatcherAgent";
+import { getAccessIdentity } from "../lib/auth";
 import { getTask } from "../lib/r2";
 import type { Env } from "../lib/types";
 
@@ -37,7 +39,9 @@ export class ChatAgentImpl extends AIChatAgent {
     }
 
     if (isTaskLikeMessage(content)) {
-      const userId = resolveUserId(options?.body);
+      const { request } = getCurrentAgent();
+      const accessIdentity = request ? getAccessIdentity(request) : null;
+      const userId = accessIdentity?.userId ?? resolveUserId(options?.body);
       const dispatcher = new DispatcherAgent();
       const routed = await dispatcher.handleInboundRequest(env, {
         userId,
