@@ -13,6 +13,31 @@ workers_dev = true
 # Timeout for long-running agent tasks
 limits = { cpu_ms = 30000 }
 
+# Default environment (used by Git-based deployments unless an env is selected)
+[vars]
+ENVIRONMENT = "production"
+LOG_LEVEL = "info"
+AI_GATEWAY_BASE_URL = ""
+AI_GATEWAY_ROUTE_ANALYST = "v1/analyze"
+AI_GATEWAY_ROUTE_CLASSIFIER = "v1/classify"
+AUTO_START_WORKFLOW = "false"
+
+[[durable_objects.bindings]]
+name = "TASK_COORDINATOR"
+class_name = "TaskCoordinatorDO"
+
+[[durable_objects.bindings]]
+name = "CHAT_AGENT"
+class_name = "ChatAgentImpl"
+
+[[r2_buckets]]
+binding = "R2_ARTIFACTS"
+bucket_name = "agent-artifacts-prod"
+
+[[r2_buckets]]
+binding = "R2_WORKLOGS"
+bucket_name = "agent-worklogs-prod"
+
 # Environment-specific configuration
 [env.production]
 
