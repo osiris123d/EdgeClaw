@@ -1,4 +1,4 @@
-name = "cloudflare-agent"
+name = "cloudflare-agent-production"
 main = "src/index.ts"
 compatibility_date = "2025-03-31"
 compatibility_flags = ["nodejs_compat"]
