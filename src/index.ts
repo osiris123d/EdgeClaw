@@ -1164,15 +1164,57 @@ function renderConfigPage(): string {
       background: #fef2f2;
       color: #991b1b;
     }
+    .tabs {
+      display: flex;
+      gap: 0;
+      margin-bottom: 16px;
+      border-bottom: 2px solid #e5e7eb;
+      background: white;
+      border-radius: 8px 8px 0 0;
+      overflow: hidden;
+    }
+    .tab-btn {
+      flex: 1;
+      padding: 12px 16px;
+      border: none;
+      background: #f9fafb;
+      border-bottom: 3px solid #f9fafb;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      color: #666;
+      transition: all 0.2s;
+      text-align: center;
+      white-space: nowrap;
+    }
+    .tab-btn.active {
+      background: white;
+      color: #2563eb;
+      border-bottom-color: #2563eb;
+    }
+    .tab-btn:hover {
+      background: white;
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
     .layout {
       display: grid;
-      grid-template-columns: 1.2fr 0.8fr;
+      grid-template-columns: 1fr;
       gap: 16px;
-      align-items: start;
     }
     .stack {
       display: grid;
       gap: 16px;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 16px;
+      align-items: start;
     }
     .panel {
       background: white;
@@ -1181,9 +1223,13 @@ function renderConfigPage(): string {
       padding: 16px;
       box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
-    .panel h2 {
+    .panel h2, .panel h3 {
       margin: 0 0 12px;
       font-size: 16px;
+    }
+    .panel h3 {
+      font-size: 14px;
+      margin-top: 16px;
     }
     .grid {
       display: grid;
@@ -1220,7 +1266,7 @@ function renderConfigPage(): string {
       resize: vertical;
     }
     .json-editor {
-      min-height: 760px;
+      min-height: 600px;
       font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
       font-size: 12px;
     }
@@ -1237,23 +1283,70 @@ function renderConfigPage(): string {
     }
     .agent-card,
     .route-card,
-    .channel-card {
+    .channel-card,
+    .route-class-card {
       border: 1px solid #e5e7eb;
       border-radius: 8px;
       padding: 12px;
       margin-bottom: 10px;
       background: #fafafa;
     }
+    .route-class-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+    }
+    .warning {
+      margin-bottom: 16px;
+      padding: 12px 14px;
+      border-radius: 6px;
+      background: #fefce8;
+      border: 1px solid #fde047;
+      color: #854d0e;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .warning-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
     .hint {
       margin-top: 8px;
       font-size: 12px;
       color: #666;
     }
+    .route-assignments {
+      display: grid;
+      gap: 10px;
+    }
+    .route-assignment {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 10px;
+      background: white;
+      border-radius: 6px;
+      border: 1px solid #f0f0f0;
+    }
+    .route-assignment label {
+      margin: 0;
+      min-width: 120px;
+    }
     @media (max-width: 980px) {
-      .layout {
-        grid-template-columns: 1fr;
+      .tabs {
+        flex-wrap: wrap;
+      }
+      .tab-btn {
+        flex: none;
+        min-width: 100px;
       }
       .grid, .check-grid {
+        grid-template-columns: 1fr;
+      }
+      .two-col {
         grid-template-columns: 1fr;
       }
       header {
@@ -1279,8 +1372,22 @@ function renderConfigPage(): string {
 
     <div id="status" class="status">Loading config...</div>
 
-    <div class="layout">
-      <div class="stack">
+    <div id="warnings-container"></div>
+
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="general">General</button>
+      <button class="tab-btn" data-tab="agents">Agents</button>
+      <button class="tab-btn" data-tab="ai-gateway">AI Gateway</button>
+      <button class="tab-btn" data-tab="features">Features</button>
+      <button class="tab-btn" data-tab="channels">Channels</button>
+      <button class="tab-btn" data-tab="security">Security</button>
+      <button class="tab-btn" data-tab="mcp">MCP</button>
+      <button class="tab-btn" data-tab="raw-json">Raw JSON</button>
+    </div>
+
+    <!-- General Tab -->
+    <div id="tab-general" class="tab-content active">
+      <div class="layout">
         <section class="panel">
           <h2>Project</h2>
           <div class="grid">
@@ -1304,67 +1411,93 @@ function renderConfigPage(): string {
         </section>
 
         <section class="panel">
+          <h2>Default Model Routes</h2>
+          <div class="grid">
+            <div class="field">
+              <label for="default-provider">Default Provider</label>
+              <input id="default-provider" type="text" />
+            </div>
+            <div class="field">
+              <label for="default-model">Default Model</label>
+              <input id="default-model" type="text" />
+            </div>
+          </div>
+          <p class="hint">These defaults apply to all agents unless overridden per-agent.</p>
+        </section>
+      </div>
+    </div>
+
+    <!-- Agents Tab -->
+    <div id="tab-agents" class="tab-content">
+      <div class="layout">
+        <section class="panel">
           <h2>Agents</h2>
           <div id="agents-panel"></div>
         </section>
+      </div>
+    </div>
 
+    <!-- AI Gateway Tab -->
+    <div id="tab-ai-gateway" class="tab-content">
+      <div class="layout">
+        <section class="panel">
+          <h2>AI Gateway Configuration</h2>
+          <div class="grid">
+            <div class="field full check-item" style="margin-top: 12px;">
+              <input id="ai-gateway-enabled" type="checkbox" />
+              <label for="ai-gateway-enabled" style="margin: 0; text-transform: none; letter-spacing: 0;">Enable AI Gateway Integration</label>
+            </div>
+            <div class="field">
+              <label for="ai-gateway-base-url">Gateway Base URL</label>
+              <input id="ai-gateway-base-url" type="text" />
+            </div>
+            <div class="field">
+              <label for="ai-gateway-default-class">Default Route Class</label>
+              <select id="ai-gateway-default-class">
+                <option value="utility">utility</option>
+                <option value="tools">tools</option>
+                <option value="reasoning">reasoning</option>
+                <option value="vision">vision</option>
+              </select>
+            </div>
+          </div>
+          <p class="hint">AI Gateway integrates with Cloudflare's models API for intelligent routing and model selection.</p>
+
+          <h3>Route Classes</h3>
+          <div id="route-classes-panel"></div>
+
+          <h3>Route Assignments</h3>
+          <p style="margin: 0 0 12px; font-size: 13px; color: #666;">Assign specific route classes to different agents and operations:</p>
+          <div class="route-assignments" id="route-assignments-panel"></div>
+        </section>
+      </div>
+    </div>
+
+    <!-- Features Tab -->
+    <div id="tab-features" class="tab-content">
+      <div class="layout">
         <section class="panel">
           <h2>Feature Flags</h2>
           <div id="features-panel" class="check-grid"></div>
         </section>
+      </div>
+    </div>
 
-        <section class="panel">
-          <h2>Model Routes</h2>
-          <div class="route-card">
-            <div class="grid">
-              <div class="field">
-                <label for="default-provider">Default Provider</label>
-                <input id="default-provider" type="text" />
-              </div>
-              <div class="field">
-                <label for="default-model">Default Model</label>
-                <input id="default-model" type="text" />
-              </div>
-            </div>
-          </div>
-
-          <div class="route-card">
-            <div class="grid">
-              <div class="field check-item" style="margin-top: 24px;">
-                <input id="analyst-use-gateway" type="checkbox" />
-                <label for="analyst-use-gateway" style="margin: 0; text-transform: none; letter-spacing: 0;">Analyst use AI Gateway</label>
-              </div>
-              <div class="field">
-                <label for="analyst-route-class">Analyst Route Class</label>
-                <select id="analyst-route-class">
-                  <option value="utility">utility</option>
-                  <option value="tools">tools</option>
-                  <option value="reasoning">reasoning</option>
-                  <option value="vision">vision</option>
-                </select>
-              </div>
-              <div class="field check-item" style="margin-top: 24px;">
-                <input id="selected-route-enabled" type="checkbox" />
-                <label for="selected-route-enabled" style="margin: 0; text-transform: none; letter-spacing: 0;">Selected class enabled</label>
-              </div>
-              <div class="field">
-                <label for="selected-route-name">Selected Class Gateway Route</label>
-                <input id="selected-route-name" type="text" />
-              </div>
-            </div>
-          </div>
-
-          <div id="models-panel"></div>
-          <p class="hint">AI Gateway flags are stored on the model config as <code>useAIGateway</code> where applicable, and globally via the feature flag.</p>
-        </section>
-
+    <!-- Channels Tab -->
+    <div id="tab-channels" class="tab-content">
+      <div class="layout">
         <section class="panel">
           <h2>Channels</h2>
           <div id="channels-panel"></div>
         </section>
+      </div>
+    </div>
 
+    <!-- Security Tab -->
+    <div id="tab-security" class="tab-content">
+      <div class="layout">
         <section class="panel">
-          <h2>Security</h2>
+          <h2>Security & Approval</h2>
           <div class="grid">
             <div class="field">
               <label for="security-threshold">Audit Score Threshold</label>
@@ -1389,22 +1522,48 @@ function renderConfigPage(): string {
           </div>
         </section>
       </div>
-
-      <section class="panel">
-        <h2>Raw JSON</h2>
-        <textarea id="json-editor" class="json-editor"></textarea>
-        <p class="hint">Editing raw JSON is allowed. Leaving the editor updates Validate and Save to use the edited payload.</p>
-      </section>
     </div>
+
+    <!-- MCP Tab -->
+    <div id="tab-mcp" class="tab-content">
+      <div class="layout">
+        <section class="panel">
+          <h2>Model Context Protocol (MCP)</h2>
+          <div class="grid">
+            <div class="field full check-item" style="margin-top: 12px;">
+              <input id="mcp-enabled" type="checkbox" />
+              <label for="mcp-enabled" style="margin: 0; text-transform: none; letter-spacing: 0;">Enable MCP Support</label>
+            </div>
+          </div>
+          <div id="mcp-servers-panel"></div>
+          <p class="hint">MCP servers provide tools and resources to agents. Configure available servers below.</p>
+        </section>
+      </div>
+    </div>
+
+    <!-- Raw JSON Tab -->
+    <div id="tab-raw-json" class="tab-content">
+      <div class="layout">
+        <section class="panel">
+          <h2>Raw JSON Editor</h2>
+          <textarea id="json-editor" class="json-editor"></textarea>
+          <p class="hint">Edit the raw configuration directly. Changes are applied when you switch tabs or save.</p>
+        </section>
+      </div>
+    </div>
+
   </div>
 
   <script>
     const statusEl = document.getElementById('status');
+    const warningsContainerEl = document.getElementById('warnings-container');
     const jsonEditorEl = document.getElementById('json-editor');
     const agentsPanelEl = document.getElementById('agents-panel');
     const featuresPanelEl = document.getElementById('features-panel');
-    const modelsPanelEl = document.getElementById('models-panel');
     const channelsPanelEl = document.getElementById('channels-panel');
+    const routeClassesPanelEl = document.getElementById('route-classes-panel');
+    const routeAssignmentsPanelEl = document.getElementById('route-assignments-panel');
+    const mcpServersPanelEl = document.getElementById('mcp-servers-panel');
 
     const projectNameEl = document.getElementById('project-name');
     const projectVersionEl = document.getElementById('project-version');
@@ -1412,10 +1571,10 @@ function renderConfigPage(): string {
     const projectDescriptionEl = document.getElementById('project-description');
     const defaultProviderEl = document.getElementById('default-provider');
     const defaultModelEl = document.getElementById('default-model');
-    const analystUseGatewayEl = document.getElementById('analyst-use-gateway');
-    const analystRouteClassEl = document.getElementById('analyst-route-class');
-    const selectedRouteEnabledEl = document.getElementById('selected-route-enabled');
-    const selectedRouteNameEl = document.getElementById('selected-route-name');
+    const aiGatewayEnabledEl = document.getElementById('ai-gateway-enabled');
+    const aiGatewayBaseUrlEl = document.getElementById('ai-gateway-base-url');
+    const aiGatewayDefaultClassEl = document.getElementById('ai-gateway-default-class');
+    const mcpEnabledEl = document.getElementById('mcp-enabled');
     const securityThresholdEl = document.getElementById('security-threshold');
     const securityEscalationEl = document.getElementById('security-escalation');
     const securityRolesEl = document.getElementById('security-roles');
@@ -1434,6 +1593,70 @@ function renderConfigPage(): string {
 
     function commaSplit(value) {
       return value.split(',').map(v => v.trim()).filter(Boolean);
+    }
+
+    function switchTab(tabName) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+      
+      const tabEl = document.getElementById('tab-' + tabName);
+      if (tabEl) {
+        tabEl.classList.add('active');
+      }
+      
+      const btnEl = document.querySelector('[data-tab="' + tabName + '"]');
+      if (btnEl) {
+        btnEl.classList.add('active');
+      }
+    }
+
+    function checkValidationWarnings() {
+      const warnings = [];
+
+      if (!configState) return warnings;
+
+      const aiGateway = configState.aiGateway || {};
+      if (aiGateway.enabled && !aiGateway.baseUrl) {
+        warnings.push({
+          type: 'warning',
+          title: 'AI Gateway enabled but base URL missing',
+          message: 'Enable AI Gateway in the AI Gateway tab and provide a base URL for the gateway service.'
+        });
+      }
+
+      if (aiGateway.enabled) {
+        const defaultClass = aiGateway.defaultRouteClass || 'utility';
+        const routeClassCfg = (aiGateway.routeClasses || {})[defaultClass] || {};
+        if (!routeClassCfg.enabled) {
+          warnings.push({
+            type: 'warning',
+            title: 'Default route class is not enabled',
+            message: 'Default route class "' + defaultClass + '" is disabled. Enable it in the Route Classes section.'
+          });
+        }
+      }
+
+      const mcpEnabled = configState.mcp?.enabled;
+      const mcpServers = configState.mcp?.servers || {};
+      if (mcpEnabled && Object.keys(mcpServers).length === 0) {
+        warnings.push({
+          type: 'warning',
+          title: 'MCP enabled with no servers configured',
+          message: 'Enable MCP support but no servers are configured. Add servers in the MCP tab.'
+        });
+      }
+
+      return warnings;
+    }
+
+    function renderWarnings() {
+      const warnings = checkValidationWarnings();
+      warningsContainerEl.innerHTML = warnings.map(w => 
+        '<div class="warning">' +
+        '  <div class="warning-title">' + escapeHtml(w.title) + '</div>' +
+        '  <div>' + escapeHtml(w.message) + '</div>' +
+        '</div>'
+      ).join('');
     }
 
     function createDefaultConfig() {
@@ -1470,12 +1693,20 @@ function renderConfigPage(): string {
         },
         aiGateway: {
           enabled: false,
+          baseUrl: '',
           defaultRouteClass: 'utility',
           routeClasses: {
             utility: { enabled: true, route: 'utility' },
             tools: { enabled: true, route: 'tools' },
             reasoning: { enabled: true, route: 'reasoning' },
             vision: { enabled: false, route: 'vision' }
+          },
+          routes: {
+            classifier: 'utility',
+            analyst: 'reasoning',
+            audit: 'reasoning',
+            chatFreeform: 'utility',
+            chatDeepReasoning: 'reasoning'
           }
         },
         channels: {
@@ -1495,6 +1726,10 @@ function renderConfigPage(): string {
           allowedAccessTeams: [],
           allowApiKeyAuth: true,
           rateLimiting: {}
+        },
+        mcp: {
+          enabled: false,
+          servers: {}
         },
         storage: {
           artifactBucket: 'R2_ARTIFACTS',
@@ -1523,16 +1758,19 @@ function renderConfigPage(): string {
         routeClass: 'reasoning'
       };
       configState.aiGateway = configState.aiGateway || {};
+      configState.aiGateway.baseUrl = configState.aiGateway.baseUrl || '';
       configState.aiGateway.routeClasses = configState.aiGateway.routeClasses || {};
       configState.aiGateway.routeClasses.utility = configState.aiGateway.routeClasses.utility || { enabled: true, route: 'utility' };
       configState.aiGateway.routeClasses.tools = configState.aiGateway.routeClasses.tools || { enabled: true, route: 'tools' };
       configState.aiGateway.routeClasses.reasoning = configState.aiGateway.routeClasses.reasoning || { enabled: true, route: 'reasoning' };
       configState.aiGateway.routeClasses.vision = configState.aiGateway.routeClasses.vision || { enabled: false, route: 'vision' };
+      configState.aiGateway.routes = configState.aiGateway.routes || {};
       configState.channels = configState.channels || {};
       configState.security = configState.security || {};
       configState.security.approvalRules = configState.security.approvalRules || {};
       configState.security.approvalRoles = Array.isArray(configState.security.approvalRoles) ? configState.security.approvalRoles : [];
       configState.security.allowedAccessTeams = Array.isArray(configState.security.allowedAccessTeams) ? configState.security.allowedAccessTeams : [];
+      configState.mcp = configState.mcp || { enabled: false, servers: {} };
     }
 
     function renderAgents() {
@@ -1568,18 +1806,40 @@ function renderConfigPage(): string {
       }).join('');
     }
 
-    function renderModels() {
-      const byAgent = configState.models.byAgent || {};
-      const keys = Object.keys(byAgent).sort();
-      modelsPanelEl.innerHTML = keys.map((key) => {
-        const route = byAgent[key] || {};
-        const routeConfig = route.config || {};
-        return '<div class="route-card">' +
-          '<div class="grid">' +
-          '  <div class="field"><label>' + key + ' Provider</label><input type="text" data-model-provider="' + key + '" value="' + escapeHtml(route.provider || '') + '" /></div>' +
-          '  <div class="field"><label>' + key + ' Model</label><input type="text" data-model-name="' + key + '" value="' + escapeHtml(route.name || '') + '" /></div>' +
-          '  <div class="field check-item" style="margin-top: 24px;"><input type="checkbox" data-model-gateway="' + key + '" ' + (routeConfig.useAIGateway ? 'checked' : '') + ' /><label style="margin: 0; text-transform: none; letter-spacing: 0;">Use AI Gateway</label></div>' +
+    function renderRouteClasses() {
+      const routeClasses = configState.aiGateway.routeClasses || {};
+      const classNames = ['utility', 'tools', 'reasoning', 'vision'];
+      routeClassesPanelEl.innerHTML = classNames.map((className) => {
+        const cfg = routeClasses[className] || { enabled: false, route: className };
+        return '<div class="route-class-card">' +
+          '<input type="checkbox" data-route-class-toggle="' + className + '" ' + (cfg.enabled ? 'checked' : '') + ' />' +
+          '<div style="display: flex; flex-direction: column; gap: 8px; flex: 1;">' +
+          '  <label style="margin: 0; text-transform: none; font-weight: 600;">' + className + '</label>' +
+          '  <input type="text" placeholder="Route name" data-route-class-name="' + className + '" value="' + escapeHtml(cfg.route || '') + '" style="font-size: 12px;" />' +
           '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderRouteAssignments() {
+      const routes = configState.aiGateway.routes || {};
+      const assignments = [
+        { key: 'classifier', label: 'Classifier Agent' },
+        { key: 'analyst', label: 'Analyst Agent' },
+        { key: 'audit', label: 'Audit Agent' },
+        { key: 'chatFreeform', label: 'Chat: Freeform Q&A' },
+        { key: 'chatDeepReasoning', label: 'Chat: Deep Reasoning' }
+      ];
+      routeAssignmentsPanelEl.innerHTML = assignments.map(({ key, label }) => {
+        const currentClass = routes[key] || 'utility';
+        return '<div class="route-assignment">' +
+          '<label style="margin: 0;">' + label + '</label>' +
+          '<select data-route-assignment="' + key + '" style="width: 100%; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 4px; font: inherit;">' +
+          '  <option value="utility" ' + (currentClass === 'utility' ? 'selected' : '') + '>utility</option>' +
+          '  <option value="tools" ' + (currentClass === 'tools' ? 'selected' : '') + '>tools</option>' +
+          '  <option value="reasoning" ' + (currentClass === 'reasoning' ? 'selected' : '') + '>reasoning</option>' +
+          '  <option value="vision" ' + (currentClass === 'vision' ? 'selected' : '') + '>vision</option>' +
+          '</select>' +
         '</div>';
       }).join('');
     }
@@ -1597,6 +1857,25 @@ function renderConfigPage(): string {
       }).join('');
     }
 
+    function renderMcpServers() {
+      const mcp = configState.mcp || { enabled: false, servers: {} };
+      const servers = mcp.servers || {};
+      const serverNames = Object.keys(servers).sort();
+      
+      mcpServersPanelEl.innerHTML = '<div style="margin-top: 12px;">' +
+        (serverNames.length === 0 
+          ? '<p style="font-size: 13px; color: #666; margin: 0;">No MCP servers configured. Add servers by editing the raw JSON or extend this UI.</p>'
+          : serverNames.map(name => {
+              const server = servers[name] || {};
+              return '<div class="route-card">' +
+                '<label style="margin: 0; font-weight: 600; text-transform: none;">' + escapeHtml(name) + '</label>' +
+                '<p style="margin: 4px 0 0; font-size: 12px; color: #666;">' + (server.description || 'No description') + '</p>' +
+              '</div>';
+            }).join('')
+        ) +
+        '</div>';
+    }
+
     function renderForm() {
       ensureConfigShape();
       projectNameEl.value = configState.metadata.name || '';
@@ -1605,13 +1884,10 @@ function renderConfigPage(): string {
       projectDescriptionEl.value = configState.metadata.description || '';
       defaultProviderEl.value = configState.models.default.provider || '';
       defaultModelEl.value = configState.models.default.name || '';
-      const analystModel = configState.models.byAgent.analyst || {};
-      const analystRouteClass = analystModel.routeClass || 'reasoning';
-      analystUseGatewayEl.checked = !!analystModel.useAIGateway;
-      analystRouteClassEl.value = analystRouteClass;
-      const selectedRouteCfg = configState.aiGateway.routeClasses[analystRouteClass] || { enabled: false, route: '' };
-      selectedRouteEnabledEl.checked = !!selectedRouteCfg.enabled;
-      selectedRouteNameEl.value = selectedRouteCfg.route || '';
+      aiGatewayEnabledEl.checked = !!configState.aiGateway.enabled;
+      aiGatewayBaseUrlEl.value = configState.aiGateway.baseUrl || '';
+      aiGatewayDefaultClassEl.value = configState.aiGateway.defaultRouteClass || 'utility';
+      mcpEnabledEl.checked = !!configState.mcp.enabled;
       securityThresholdEl.value = configState.security.approvalRules.auditScoreThreshold ?? '';
       securityEscalationEl.checked = !!configState.security.approvalRules.onEscalation;
       securityRolesEl.value = (configState.security.approvalRoles || []).join(', ');
@@ -1619,8 +1895,11 @@ function renderConfigPage(): string {
       securityApiKeyEl.checked = !!configState.security.allowApiKeyAuth;
       renderAgents();
       renderFeatures();
-      renderModels();
       renderChannels();
+      renderRouteClasses();
+      renderRouteAssignments();
+      renderMcpServers();
+      renderWarnings();
       syncRawEditor();
     }
 
@@ -1642,15 +1921,10 @@ function renderConfigPage(): string {
       configState.models.default.name = defaultModelEl.value.trim();
       configState.models.default.config = configState.models.default.config || {};
       configState.models.default.config.useAIGateway = !!configState.features.aiGatewayIntegration;
-      configState.models.byAgent.analyst = configState.models.byAgent.analyst || {};
-      configState.models.byAgent.analyst.useAIGateway = !!analystUseGatewayEl.checked;
-      configState.models.byAgent.analyst.routeClass = analystRouteClassEl.value;
-      const selectedClass = analystRouteClassEl.value;
-      configState.aiGateway = configState.aiGateway || {};
-      configState.aiGateway.routeClasses = configState.aiGateway.routeClasses || {};
-      configState.aiGateway.routeClasses[selectedClass] = configState.aiGateway.routeClasses[selectedClass] || {};
-      configState.aiGateway.routeClasses[selectedClass].enabled = !!selectedRouteEnabledEl.checked;
-      configState.aiGateway.routeClasses[selectedClass].route = selectedRouteNameEl.value.trim();
+      configState.aiGateway.enabled = !!aiGatewayEnabledEl.checked;
+      configState.aiGateway.baseUrl = aiGatewayBaseUrlEl.value.trim();
+      configState.aiGateway.defaultRouteClass = aiGatewayDefaultClassEl.value;
+      configState.mcp.enabled = !!mcpEnabledEl.checked;
       configState.security.approvalRules.auditScoreThreshold = securityThresholdEl.value === '' ? undefined : Number(securityThresholdEl.value);
       configState.security.approvalRules.onEscalation = securityEscalationEl.checked;
       configState.security.approvalRoles = commaSplit(securityRolesEl.value);
@@ -1658,6 +1932,7 @@ function renderConfigPage(): string {
       configState.security.allowApiKeyAuth = securityApiKeyEl.checked;
       configState.metadata.updatedAt = new Date().toISOString();
       syncRawEditor();
+      renderWarnings();
     }
 
     function updateStateFromRawEditor() {
@@ -1733,6 +2008,15 @@ function renderConfigPage(): string {
       }
     }
 
+    document.addEventListener('click', (event) => {
+      if (event.target.classList.contains('tab-btn')) {
+        const tabName = event.target.dataset.tab;
+        if (tabName) {
+          switchTab(tabName);
+        }
+      }
+    });
+
     document.addEventListener('input', (event) => {
       if (!configState) return;
       const target = event.target;
@@ -1747,12 +2031,6 @@ function renderConfigPage(): string {
       if (target.dataset.featureKey) {
         configState.features[target.dataset.featureKey] = !!target.checked;
       }
-      if (target.dataset.modelProvider) {
-        configState.models.byAgent[target.dataset.modelProvider].provider = target.value;
-      }
-      if (target.dataset.modelName) {
-        configState.models.byAgent[target.dataset.modelName].name = target.value;
-      }
       updateStateFromForm();
     });
 
@@ -1760,24 +2038,21 @@ function renderConfigPage(): string {
       if (!configState) return;
       const target = event.target;
 
-      if (target === analystRouteClassEl) {
-        configState.models.byAgent = configState.models.byAgent || {};
-        configState.models.byAgent.analyst = configState.models.byAgent.analyst || {};
-        configState.models.byAgent.analyst.routeClass = analystRouteClassEl.value;
-        renderForm();
-        return;
-      }
-
       if (target.dataset.agentEnabled) {
         configState.agents[target.dataset.agentEnabled].enabled = !!target.checked;
       }
-      if (target.dataset.modelGateway) {
-        const route = configState.models.byAgent[target.dataset.modelGateway];
-        route.config = route.config || {};
-        route.config.useAIGateway = !!target.checked;
-      }
       if (target.dataset.channelKey) {
         configState.channels[target.dataset.channelKey].enabled = !!target.checked;
+      }
+      if (target.dataset.routeClassToggle) {
+        configState.aiGateway.routeClasses[target.dataset.routeClassToggle].enabled = !!target.checked;
+        renderRouteClasses();
+      }
+      if (target.dataset.routeClassNa) {
+        configState.aiGateway.routeClasses[target.dataset.routeClassName].route = target.value;
+      }
+      if (target.dataset.routeAssignment) {
+        configState.aiGateway.routes[target.dataset.routeAssignment] = target.value;
       }
       if (target === jsonEditorEl) {
         updateStateFromRawEditor();
