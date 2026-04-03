@@ -346,30 +346,37 @@ export class AnalystAgent {
       return { text: null, routeClass };
     }
 
-    const url = `${baseUrl.replace(/\/$/, "")}/${route}`;
+    // Cloudflare AI Gateway OpenAI-compat endpoint: POST <baseUrl>/chat/completions
+    // - model is set to the dynamic route name (e.g. "dynamic/reasoning-route")
+    // - metadata travels in cf-aig-metadata header, not in the JSON body
+    const url = `${baseUrl.replace(/\/$/, "")}/chat/completions`;
+    const aigMetadata = JSON.stringify({
+      taskId: input.task.taskId,
+      agentRole: "analyst",
+      taskType: input.task.taskType,
+      routeClass,
+    });
     const response = await fetch(url, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${token}`,
+        "cf-aig-authorization": `Bearer ${token}`,
         "Content-Type": "application/json",
+        "cf-aig-metadata": aigMetadata,
       },
       body: JSON.stringify({
+        model: route,
         messages: [
           { role: "system", content: "You are an enterprise analyst." },
           { role: "user", content: prompt },
         ],
-        metadata: {
-          taskId: input.task.taskId,
-          agentRole: "analyst",
-          taskType: input.task.taskType,
-          routeClass,
-        },
       }),
     });
 
     if (!response.ok) {
       // TODO: Implement retry/backoff policy for transient gateway errors.
-      throw new Error(`AI Gateway request failed with status ${response.status}`);
+      throw new Error(
+        `AI Gateway request failed with status ${response.status} (model=${route}, routeClass=${routeClass})`
+      );
     }
 
     const raw = (await response.json()) as Record<string, unknown>;
