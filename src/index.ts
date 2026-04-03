@@ -91,6 +91,7 @@ function isBrowserFacingRoute(pathname: string): boolean {
     pathname === "/config-ui" ||
     pathname === "/system" ||
     pathname === "/tasks-console" ||
+    pathname === "/tasks/run-next" ||
     pathname === "/chat" ||
     pathname.startsWith("/api/chat/") ||
     pathname === "/api/chat/sessions" ||
@@ -105,7 +106,8 @@ function isConfigApiRoute(pathname: string): boolean {
 }
 
 function isApiKeyOnlyRoute(pathname: string): boolean {
-  const isTasksMachineRoute = pathname === "/tasks" || pathname.startsWith("/tasks/");
+  const isTasksMachineRoute =
+    (pathname === "/tasks" || pathname.startsWith("/tasks/")) && pathname !== "/tasks/run-next";
   const isConfigMachineRoute = pathname === "/config" || pathname.startsWith("/config/");
   return isTasksMachineRoute || isConfigMachineRoute;
 }
@@ -564,7 +566,18 @@ function renderTasksConsole(): string {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ taskId: selectedTaskId })
         });
-        if (!res.ok) throw new Error('Execution failed');
+
+        if (!res.ok) {
+          let reason = 'Execution failed';
+          try {
+            const data = await res.json();
+            reason = data?.error || data?.message || reason;
+          } catch (_) {
+            // Keep generic reason when non-JSON error responses are returned.
+          }
+          throw new Error(reason + ' (HTTP ' + res.status + ')');
+        }
+
         statusEl.innerHTML = '<div class="status-msg success">Executed successfully</div>';
         await loadTaskDetail(selectedTaskId);
       } catch (err) {
