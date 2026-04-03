@@ -2048,7 +2048,7 @@ function renderConfigPage(): string {
         configState.aiGateway.routeClasses[target.dataset.routeClassToggle].enabled = !!target.checked;
         renderRouteClasses();
       }
-      if (target.dataset.routeClassNa) {
+        if (target.dataset.routeClassName) {
         configState.aiGateway.routeClasses[target.dataset.routeClassName].route = target.value;
       }
       if (target.dataset.routeAssignment) {
