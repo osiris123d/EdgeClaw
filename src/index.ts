@@ -43,6 +43,8 @@ import {
 } from "./lib/approval";
 import {
   appendChatMessage,
+  ChatMessage,
+  ChatStreamEvent,
   createChatMessage,
   createChatSession,
   getChatSession,
@@ -57,6 +59,7 @@ import {
   nextVersion,
   ConfigChangeEntry,
 } from "./lib/edgeclaw-config";
+import { selectAIGatewayRoute } from "./lib/ai-gateway-routing";
 
 export { TaskCoordinatorDO, ChatAgentImpl };
 
@@ -2091,6 +2094,7 @@ export default {
         if (!session) {
           return json({ ok: false, error: "Chat session not found." }, 404);
         }
+        const historyMessages = await listChatMessages(env.R2_ARTIFACTS, sessionId);
 
         const parsed = await parseJsonOr400(request);
         if (!parsed.ok) {
@@ -2304,7 +2308,31 @@ export default {
                     assistantText = "I could not confidently infer a task proposal from that message. Please add more detail and expected outcome.";
                   }
                 } else {
-                  assistantText = buildGeneralChatReply(content);
+                  const actionResult = await resolveChatActionFromHistory(env, content, historyMessages);
+                  if (actionResult.handled) {
+                    assistantText = actionResult.assistantText;
+                    taskId = actionResult.taskId;
+                    taskStatus = actionResult.taskStatus;
+                    assistantMeta = actionResult.assistantMeta;
+
+                    for (const evt of actionResult.events) {
+                      controller.enqueue(encoder.encode(sseEvent(evt)));
+                    }
+                  } else {
+                    const freeform = await answerFreeformWithAIGateway(env, content, historyMessages);
+                    if (freeform.ok && freeform.text) {
+                      assistantText = freeform.text;
+                      assistantMeta = {
+                        renderType: "assistant_text",
+                        aiRouteClass: freeform.routeClass,
+                        aiRoute: freeform.route,
+                        aiRouteSource: freeform.routeSource,
+                      };
+                    } else {
+                      // Deterministic fallback is used only after chat_action and AI freeform paths fail.
+                      assistantText = buildGeneralChatReply(content);
+                    }
+                  }
                 }
 
                 for (const chunk of chunkText(assistantText, 24)) {
@@ -3127,8 +3155,313 @@ function isStatusQuery(text: string): boolean {
 }
 
 function extractTaskIdFromText(text: string): string | null {
-  const match = /\b(task-[a-z0-9-]+)\b/i.exec(text);
-  return match ? match[1] : null;
+  const taskIdMatch = /\b(task-[a-z0-9-]+)\b/i.exec(text);
+  if (taskIdMatch) return taskIdMatch[1];
+  const uuidMatch = /\b([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\b/i.exec(text);
+  return uuidMatch ? uuidMatch[1] : null;
+}
+
+interface ChatActionResolution {
+  handled: boolean;
+  assistantText: string;
+  taskId?: string;
+  taskStatus?: string;
+  assistantMeta?: Record<string, unknown>;
+  events: ChatStreamEvent[];
+}
+
+async function resolveChatActionFromHistory(
+  env: Env,
+  content: string,
+  historyMessages: ChatMessage[]
+): Promise<ChatActionResolution> {
+  const normalized = content.toLowerCase();
+  const summary = summarizeHistoryContext(historyMessages);
+  const explicitTaskId = extractTaskIdFromText(content);
+  const targetTaskId = explicitTaskId ?? summary.lastTaskId;
+
+  if (/\b(show|what(?:'s| is)|check|get)\b.*\b(last|latest|previous)\s+task\b/.test(normalized)) {
+    if (!summary.lastTaskId) {
+      return { handled: true, assistantText: "I do not see any prior task in this chat yet.", events: [] };
+    }
+    const task = await getTask(env.R2_ARTIFACTS, summary.lastTaskId);
+    if (!task) {
+      return { handled: true, assistantText: `I could not load the last task (${summary.lastTaskId}).`, events: [] };
+    }
+    return {
+      handled: true,
+      assistantText: `Last task ${task.taskId} is ${task.status}. Approval state: ${task.approvalState}. Type/domain: ${task.taskType}/${task.domain}.`,
+      taskId: task.taskId,
+      taskStatus: task.status,
+      assistantMeta: {
+        renderType: "assistant_text",
+      },
+      events: [],
+    };
+  }
+
+  if (/\b(open)\b.*\b(failed one|failed task|last failed)\b/.test(normalized)) {
+    const failedTaskId = await findMostRecentFailedTask(env, summary.taskIds);
+    if (!failedTaskId) {
+      return { handled: true, assistantText: "I could not find a failed task in this chat history.", events: [] };
+    }
+    return {
+      handled: true,
+      assistantText: `Open details for failed task ${failedTaskId}: /api/tasks/${failedTaskId}`,
+      taskId: failedTaskId,
+      taskStatus: "failed",
+      assistantMeta: {
+        renderType: "assistant_text",
+      },
+      events: [],
+    };
+  }
+
+  if (/\b(run|start|execute|launch)\b\s+(that|it|this)(\s+now)?\b/.test(normalized) || /\brun\s+now\b/.test(normalized)) {
+    if (!targetTaskId) {
+      return {
+        handled: true,
+        assistantText: "I do not know which task to run yet. Mention a task ID or create a task first.",
+        events: [],
+      };
+    }
+
+    const task = await getTask(env.R2_ARTIFACTS, targetTaskId);
+    if (!task) {
+      return { handled: true, assistantText: `I could not find task ${targetTaskId}.`, events: [] };
+    }
+
+    if (task.status === "completed" || task.status === "in_progress" || task.status === "awaiting_approval") {
+      return {
+        handled: true,
+        assistantText: `Task ${task.taskId} is already ${task.status}.`,
+        taskId: task.taskId,
+        taskStatus: task.status,
+        assistantMeta: {
+          renderType: "task_progress",
+          progress: {
+            taskId: task.taskId,
+            status: task.status,
+            stage: "chat_action",
+            message: `Task already ${task.status}`,
+            timestamp: new Date().toISOString(),
+          },
+        },
+        events: [],
+      };
+    }
+
+    const workflow = new TaskWorkflow();
+    const run = await workflow.run(env, {
+      taskId: task.taskId,
+      workflowRunId: crypto.randomUUID(),
+    });
+
+    const events: ChatStreamEvent[] = [
+      {
+        type: "task_progress",
+        data: {
+          taskId: task.taskId,
+          status: run.status,
+          stage: "chat_action_run",
+          message: run.status === "completed" ? "Task completed from follow-up command." : run.error ?? `Task ended with status ${run.status}`,
+          timestamp: new Date().toISOString(),
+        },
+      },
+    ];
+
+    return {
+      handled: true,
+      assistantText:
+        run.status === "completed"
+          ? `Ran task ${task.taskId}. It completed successfully.`
+          : `Ran task ${task.taskId}. It ended with status ${run.status}${run.error ? `: ${run.error}` : ""}.`,
+      taskId: task.taskId,
+      taskStatus: run.status,
+      assistantMeta: {
+        renderType: "task_progress",
+        progress: {
+          taskId: task.taskId,
+          status: run.status,
+          stage: "chat_action_run",
+          message: run.status === "completed" ? "Task completed." : run.error ?? `Task ended with status ${run.status}`,
+          timestamp: new Date().toISOString(),
+        },
+      },
+      events,
+    };
+  }
+
+  return {
+    handled: false,
+    assistantText: "",
+    events: [],
+  };
+}
+
+async function answerFreeformWithAIGateway(
+  env: Env,
+  content: string,
+  historyMessages: ChatMessage[]
+): Promise<{
+  ok: boolean;
+  text: string | null;
+  routeClass: ChatRouteClass;
+  route: string | null;
+  routeSource: string;
+}> {
+  const token = env.AI_GATEWAY_TOKEN;
+  if (!token) {
+    return { ok: false, text: null, routeClass: "utility", route: null, routeSource: "missing_token" };
+  }
+
+  const config = await getEdgeClawConfig(env.R2_ARTIFACTS);
+  const preferredRouteClass = inferPreferredRouteClassForFreeform(content);
+  const selected = selectAIGatewayRoute(config, {
+    workflowType: "chat",
+    agentRole: "chat",
+    preferredRouteClass,
+  });
+
+  if (!selected.enabled || !selected.baseUrl || !selected.route) {
+    return {
+      ok: false,
+      text: null,
+      routeClass: selected.routeClass,
+      route: selected.route,
+      routeSource: selected.reason,
+    };
+  }
+
+  const promptContext = buildRecentContextForFreeform(historyMessages);
+  const response = await fetch(`${selected.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "cf-aig-authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "cf-aig-metadata": JSON.stringify({
+        workflowType: "chat",
+        agentRole: "chat",
+        routeClass: selected.routeClass,
+      }),
+    },
+    body: JSON.stringify({
+      model: selected.route,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an operator assistant. Answer clearly and concisely. Do not invent unavailable task state; ask for clarification when needed.",
+        },
+        {
+          role: "system",
+          content: promptContext,
+        },
+        {
+          role: "user",
+          content,
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      text: null,
+      routeClass: selected.routeClass,
+      route: selected.route,
+      routeSource: `gateway_http_${response.status}`,
+    };
+  }
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  const text = extractFreeformModelText(payload);
+
+  return {
+    ok: !!text,
+    text,
+    routeClass: selected.routeClass,
+    route: selected.route,
+    routeSource: selected.source,
+  };
+}
+
+function summarizeHistoryContext(messages: ChatMessage[]): {
+  taskIds: string[];
+  lastTaskId: string | null;
+} {
+  const taskIds: string[] = [];
+  const seen = new Set<string>();
+
+  for (const msg of messages) {
+    const taskId = typeof msg.taskId === "string" && msg.taskId.trim() ? msg.taskId.trim() : null;
+    if (taskId && !seen.has(taskId)) {
+      seen.add(taskId);
+      taskIds.push(taskId);
+    }
+
+    const text = typeof msg.content === "string" ? msg.content : "";
+    const extracted = extractTaskIdFromText(text);
+    if (extracted && !seen.has(extracted)) {
+      seen.add(extracted);
+      taskIds.push(extracted);
+    }
+  }
+
+  return {
+    taskIds,
+    lastTaskId: taskIds.length > 0 ? taskIds[taskIds.length - 1] : null,
+  };
+}
+
+async function findMostRecentFailedTask(env: Env, taskIds: string[]): Promise<string | null> {
+  for (let i = taskIds.length - 1; i >= 0; i -= 1) {
+    const taskId = taskIds[i];
+    const task = await getTask(env.R2_ARTIFACTS, taskId);
+    if (task?.status === "failed") return taskId;
+  }
+  return null;
+}
+
+function inferPreferredRouteClassForFreeform(content: string): ChatRouteClass {
+  const lower = content.toLowerCase();
+  if (/\b(image|diagram|visual|screenshot|vision)\b/.test(lower)) return "vision";
+  if (/\b(tool|command|action|steps|api call)\b/.test(lower)) return "tools";
+  if (/\b(why|difference|compare|explain|reason|tradeoff)\b/.test(lower)) return "reasoning";
+  return "utility";
+}
+
+function buildRecentContextForFreeform(messages: ChatMessage[]): string {
+  const snippets = messages
+    .slice(-6)
+    .map((msg) => {
+      const role = typeof msg.role === "string" ? msg.role : "unknown";
+      const content = typeof msg.content === "string" ? msg.content.replace(/\s+/g, " ").trim() : "";
+      if (!content) return "";
+      return `${role}: ${content.slice(0, 220)}`;
+    })
+    .filter(Boolean);
+
+  if (snippets.length === 0) {
+    return "No prior session context.";
+  }
+  return `Recent session context:\n${snippets.join("\n")}`;
+}
+
+function extractFreeformModelText(payload: Record<string, unknown>): string | null {
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  for (const choice of choices) {
+    const choiceRec = toRecord(choice);
+    if (!choiceRec) continue;
+    const message = toRecord(choiceRec.message);
+    const content = message?.content;
+    if (typeof content === "string" && content.trim()) return content.trim();
+  }
+
+  const outputText = payload.output_text;
+  if (typeof outputText === "string" && outputText.trim()) return outputText.trim();
+  return null;
 }
 
 function chunkText(text: string, wordsPerChunk: number): string[] {
