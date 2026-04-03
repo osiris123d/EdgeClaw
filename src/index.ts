@@ -2202,6 +2202,13 @@ export default {
                         workflowRunId: crypto.randomUUID(),
                       });
 
+                      const leaseConflict = isLeaseConflictRunFailure(runResult.status, runResult.error);
+                      const currentTaskState = leaseConflict ? await getTask(env.R2_ARTIFACTS, taskId) : null;
+                      const effectiveStatus = leaseConflict
+                        ? (currentTaskState?.status ?? "in_progress")
+                        : runResult.status;
+                      taskStatus = effectiveStatus;
+
                       for (const step of runResult.completedSteps ?? []) {
                         controller.enqueue(encoder.encode(sseEvent({
                           type: "task_progress",
@@ -2219,17 +2226,31 @@ export default {
                         type: "task_progress",
                         data: {
                           taskId,
-                          status: runResult.status,
+                          status: effectiveStatus,
                           stage: "workflow_end",
                           message:
-                            runResult.status === "completed"
+                            leaseConflict
+                              ? "This task is already running. Showing current status instead."
+                              : runResult.status === "completed"
                               ? "Task completed"
                               : runResult.error ?? `Task ended with status ${runResult.status}`,
                           timestamp: new Date().toISOString(),
                         },
                       })));
 
-                      if (runResult.status === "completed") {
+                      if (leaseConflict) {
+                        assistantMeta = {
+                          renderType: "task_progress",
+                          progress: {
+                            taskId,
+                            status: effectiveStatus,
+                            stage: "workflow_end",
+                            message: "This task is already running. Showing current status instead.",
+                            timestamp: new Date().toISOString(),
+                          },
+                        };
+                        assistantText = `This task is already running. Showing current status instead: ${taskId} is ${effectiveStatus}.`;
+                      } else if (runResult.status === "completed") {
                         const finalTask = await getTask(env.R2_ARTIFACTS, taskId);
                         const finalOutputArtifact = await getArtifact(env.R2_ARTIFACTS, taskId, "final-output.json");
                         const finalOutput = (finalOutputArtifact?.body ?? {}) as Record<string, unknown>;
@@ -3177,16 +3198,18 @@ async function resolveChatActionFromHistory(
 ): Promise<ChatActionResolution> {
   const normalized = content.toLowerCase();
   const summary = summarizeHistoryContext(historyMessages);
+  const backendSnapshot = await loadTaskSnapshotFromBackend(env);
   const explicitTaskId = extractTaskIdFromText(content);
-  const targetTaskId = explicitTaskId ?? summary.lastTaskId;
+  const targetTaskId = explicitTaskId ?? summary.lastTaskId ?? backendSnapshot.latestTaskId;
 
   if (/\b(show|what(?:'s| is)|check|get)\b.*\b(last|latest|previous)\s+task\b/.test(normalized)) {
-    if (!summary.lastTaskId) {
+    const candidateTaskId = summary.lastTaskId ?? backendSnapshot.latestTaskId;
+    if (!candidateTaskId) {
       return { handled: true, assistantText: "I do not see any prior task in this chat yet.", events: [] };
     }
-    const task = await getTask(env.R2_ARTIFACTS, summary.lastTaskId);
+    const task = await getTask(env.R2_ARTIFACTS, candidateTaskId);
     if (!task) {
-      return { handled: true, assistantText: `I could not load the last task (${summary.lastTaskId}).`, events: [] };
+      return { handled: true, assistantText: `I could not load the last task (${candidateTaskId}).`, events: [] };
     }
     return {
       handled: true,
@@ -3201,7 +3224,11 @@ async function resolveChatActionFromHistory(
   }
 
   if (/\b(open)\b.*\b(failed one|failed task|last failed)\b/.test(normalized)) {
-    const failedTaskId = await findMostRecentFailedTask(env, summary.taskIds);
+    const failedTaskId = await findMostRecentFailedTask(
+      env,
+      summary.taskIds,
+      backendSnapshot.latestFailedTaskId
+    );
     if (!failedTaskId) {
       return { handled: true, assistantText: "I could not find a failed task in this chat history.", events: [] };
     }
@@ -3218,6 +3245,26 @@ async function resolveChatActionFromHistory(
   }
 
   if (/\b(run|start|execute|launch)\b\s+(that|it|this)(\s+now)?\b/.test(normalized) || /\brun\s+now\b/.test(normalized)) {
+    if (!targetTaskId && backendSnapshot.runningTaskId) {
+      return {
+        handled: true,
+        assistantText: `Task ${backendSnapshot.runningTaskId} is currently running.`,
+        taskId: backendSnapshot.runningTaskId,
+        taskStatus: "in_progress",
+        assistantMeta: {
+          renderType: "task_progress",
+          progress: {
+            taskId: backendSnapshot.runningTaskId,
+            status: "in_progress",
+            stage: "chat_action",
+            message: "Task is currently running",
+            timestamp: new Date().toISOString(),
+          },
+        },
+        events: [],
+      };
+    }
+
     if (!targetTaskId) {
       return {
         handled: true,
@@ -3257,14 +3304,23 @@ async function resolveChatActionFromHistory(
       workflowRunId: crypto.randomUUID(),
     });
 
+    const leaseConflict = isLeaseConflictRunFailure(run.status, run.error);
+    const currentTaskState = leaseConflict ? await getTask(env.R2_ARTIFACTS, task.taskId) : null;
+    const effectiveStatus = leaseConflict ? (currentTaskState?.status ?? "in_progress") : run.status;
+    const effectiveMessage = leaseConflict
+      ? "This task is already running. Showing current status instead."
+      : run.status === "completed"
+        ? "Task completed from follow-up command."
+        : run.error ?? `Task ended with status ${run.status}`;
+
     const events: ChatStreamEvent[] = [
       {
         type: "task_progress",
         data: {
           taskId: task.taskId,
-          status: run.status,
+          status: effectiveStatus,
           stage: "chat_action_run",
-          message: run.status === "completed" ? "Task completed from follow-up command." : run.error ?? `Task ended with status ${run.status}`,
+          message: effectiveMessage,
           timestamp: new Date().toISOString(),
         },
       },
@@ -3273,18 +3329,24 @@ async function resolveChatActionFromHistory(
     return {
       handled: true,
       assistantText:
-        run.status === "completed"
+        leaseConflict
+          ? `This task is already running. Showing current status instead: ${task.taskId} is ${effectiveStatus}.`
+          : run.status === "completed"
           ? `Ran task ${task.taskId}. It completed successfully.`
           : `Ran task ${task.taskId}. It ended with status ${run.status}${run.error ? `: ${run.error}` : ""}.`,
       taskId: task.taskId,
-      taskStatus: run.status,
+      taskStatus: effectiveStatus,
       assistantMeta: {
         renderType: "task_progress",
         progress: {
           taskId: task.taskId,
-          status: run.status,
+          status: effectiveStatus,
           stage: "chat_action_run",
-          message: run.status === "completed" ? "Task completed." : run.error ?? `Task ended with status ${run.status}`,
+          message: leaseConflict
+            ? "This task is already running. Showing current status instead."
+            : run.status === "completed"
+              ? "Task completed."
+              : run.error ?? `Task ended with status ${run.status}`,
           timestamp: new Date().toISOString(),
         },
       },
@@ -3316,12 +3378,8 @@ async function answerFreeformWithAIGateway(
   }
 
   const config = await getEdgeClawConfig(env.R2_ARTIFACTS);
-  const preferredRouteClass = inferPreferredRouteClassForFreeform(content);
-  const selected = selectAIGatewayRoute(config, {
-    workflowType: "chat",
-    agentRole: "chat",
-    preferredRouteClass,
-  });
+  const routeAttempt = selectFreeformRouteAttempt(config, content);
+  const selected = routeAttempt.selected;
 
   if (!selected.enabled || !selected.baseUrl || !selected.route) {
     return {
@@ -3334,6 +3392,97 @@ async function answerFreeformWithAIGateway(
   }
 
   const promptContext = buildRecentContextForFreeform(historyMessages);
+  const primary = await callFreeformAIGateway(
+    token,
+    selected,
+    content,
+    promptContext
+  );
+
+  if (primary.ok) {
+    return {
+      ok: true,
+      text: primary.text,
+      routeClass: selected.routeClass,
+      route: selected.route,
+      routeSource: selected.source,
+    };
+  }
+
+  const alternate = routeAttempt.alternate;
+  if (alternate && alternate.enabled && alternate.baseUrl && alternate.route) {
+    const secondary = await callFreeformAIGateway(
+      token,
+      alternate,
+      content,
+      promptContext
+    );
+    if (secondary.ok) {
+      return {
+        ok: true,
+        text: secondary.text,
+        routeClass: alternate.routeClass,
+        route: alternate.route,
+        routeSource: alternate.source,
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    text: null,
+    routeClass: selected.routeClass,
+    route: selected.route,
+    routeSource: primary.routeSource,
+  };
+}
+
+function selectFreeformRouteAttempt(
+  config: EdgeClawConfig | null,
+  content: string
+): {
+  selected: ReturnType<typeof selectAIGatewayRoute>;
+  alternate: ReturnType<typeof selectAIGatewayRoute> | null;
+} {
+  const preferred = inferPreferredRouteClassForFreeform(content);
+  const alternateClass: ChatRouteClass = preferred === "reasoning" ? "utility" : "reasoning";
+
+  const selected = selectAIGatewayRoute(config, {
+    workflowType: "chat",
+    agentRole: "chat",
+    preferredRouteClass: preferred,
+  });
+
+  const alternate = selectAIGatewayRoute(config, {
+    workflowType: "chat",
+    agentRole: "chat",
+    preferredRouteClass: alternateClass,
+  });
+
+  // If preferred route is unavailable, but alternate is configured, promote alternate.
+  if ((!selected.enabled || !selected.baseUrl || !selected.route) && alternate.enabled && alternate.baseUrl && alternate.route) {
+    return {
+      selected: alternate,
+      alternate: null,
+    };
+  }
+
+  return {
+    selected,
+    alternate,
+  };
+}
+
+async function callFreeformAIGateway(
+  token: string,
+  selected: ReturnType<typeof selectAIGatewayRoute>,
+  content: string,
+  promptContext: string
+): Promise<{ ok: boolean; text: string | null; routeSource: string }> {
+  if (!selected.baseUrl || !selected.route) {
+    return { ok: false, text: null, routeSource: selected.reason };
+  }
+
   const response = await fetch(`${selected.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
     headers: {
@@ -3366,13 +3515,7 @@ async function answerFreeformWithAIGateway(
   });
 
   if (!response.ok) {
-    return {
-      ok: false,
-      text: null,
-      routeClass: selected.routeClass,
-      route: selected.route,
-      routeSource: `gateway_http_${response.status}`,
-    };
+    return { ok: false, text: null, routeSource: `gateway_http_${response.status}` };
   }
 
   const payload = (await response.json()) as Record<string, unknown>;
@@ -3381,8 +3524,6 @@ async function answerFreeformWithAIGateway(
   return {
     ok: !!text,
     text,
-    routeClass: selected.routeClass,
-    route: selected.route,
     routeSource: selected.source,
   };
 }
@@ -3415,13 +3556,67 @@ function summarizeHistoryContext(messages: ChatMessage[]): {
   };
 }
 
-async function findMostRecentFailedTask(env: Env, taskIds: string[]): Promise<string | null> {
+async function findMostRecentFailedTask(
+  env: Env,
+  taskIds: string[],
+  backendFailedTaskId?: string | null
+): Promise<string | null> {
   for (let i = taskIds.length - 1; i >= 0; i -= 1) {
     const taskId = taskIds[i];
     const task = await getTask(env.R2_ARTIFACTS, taskId);
     if (task?.status === "failed") return taskId;
   }
+  if (backendFailedTaskId) return backendFailedTaskId;
   return null;
+}
+
+interface TaskSnapshot {
+  latestTaskId: string | null;
+  latestFailedTaskId: string | null;
+  runningTaskId: string | null;
+}
+
+async function loadTaskSnapshotFromBackend(env: Env): Promise<TaskSnapshot> {
+  try {
+    const listed = await env.R2_ARTIFACTS.list({ prefix: "org/hilton/tasks/" });
+    const taskKeys = listed.objects
+      .map((obj) => obj.key)
+      .filter((key) => key.endsWith("/task.json"));
+
+    const tasks: TaskPacket[] = [];
+    for (const key of taskKeys) {
+      try {
+        const obj = await env.R2_ARTIFACTS.get(key);
+        if (!obj) continue;
+        const task = await obj.json<TaskPacket>();
+        if (task?.taskId) tasks.push(task);
+      } catch {
+        // Ignore unreadable task packet and continue scanning.
+      }
+    }
+
+    tasks.sort((a, b) => {
+      const aTime = Date.parse(a.updatedAt || a.createdAt || "");
+      const bTime = Date.parse(b.updatedAt || b.createdAt || "");
+      return bTime - aTime;
+    });
+
+    const latestTask = tasks[0] ?? null;
+    const latestFailedTask = tasks.find((task) => task.status === "failed") ?? null;
+    const runningTask = tasks.find((task) => task.status === "in_progress") ?? null;
+
+    return {
+      latestTaskId: latestTask?.taskId ?? null,
+      latestFailedTaskId: latestFailedTask?.taskId ?? null,
+      runningTaskId: runningTask?.taskId ?? null,
+    };
+  } catch {
+    return {
+      latestTaskId: null,
+      latestFailedTaskId: null,
+      runningTaskId: null,
+    };
+  }
 }
 
 function inferPreferredRouteClassForFreeform(content: string): ChatRouteClass {
@@ -3462,6 +3657,16 @@ function extractFreeformModelText(payload: Record<string, unknown>): string | nu
   const outputText = payload.output_text;
   if (typeof outputText === "string" && outputText.trim()) return outputText.trim();
   return null;
+}
+
+function isLeaseConflictRunFailure(status: string, error: string | undefined): boolean {
+  if (status !== "failed" || !error) return false;
+  const lower = error.toLowerCase();
+  return (
+    lower.includes("could not acquire coordinator lease") ||
+    lower.includes("lease") && lower.includes("held") ||
+    lower.includes("lease") && lower.includes("acquire")
+  );
 }
 
 function chunkText(text: string, wordsPerChunk: number): string[] {
