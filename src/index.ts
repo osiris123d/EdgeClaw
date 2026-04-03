@@ -1960,6 +1960,28 @@ function renderConfigPage(): string {
       configState.security.approvalRoles = commaSplit(securityRolesEl.value);
       configState.security.allowedAccessTeams = commaSplit(securityTeamsEl.value);
       configState.security.allowApiKeyAuth = securityApiKeyEl.checked;
+
+      // Keep route-related fields synchronized even if a specific change handler misses.
+      document.querySelectorAll('[data-route-class-toggle]').forEach((el) => {
+        const className = el.dataset.routeClassToggle;
+        if (!className) return;
+        configState.aiGateway.routeClasses[className] = configState.aiGateway.routeClasses[className] || { enabled: false, route: className };
+        configState.aiGateway.routeClasses[className].enabled = !!el.checked;
+      });
+
+      document.querySelectorAll('[data-route-class-name]').forEach((el) => {
+        const className = el.dataset.routeClassName;
+        if (!className) return;
+        configState.aiGateway.routeClasses[className] = configState.aiGateway.routeClasses[className] || { enabled: false, route: className };
+        configState.aiGateway.routeClasses[className].route = (el.value || '').trim();
+      });
+
+      document.querySelectorAll('[data-route-assignment]').forEach((el) => {
+        const assignmentKey = el.dataset.routeAssignment;
+        if (!assignmentKey) return;
+        configState.aiGateway.routes[assignmentKey] = el.value;
+      });
+
       configState.metadata.updatedAt = new Date().toISOString();
       syncRawEditor();
       renderWarnings();
