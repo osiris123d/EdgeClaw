@@ -2069,11 +2069,11 @@ function renderConfigPage(): string {
     }
 
     document.addEventListener('click', (event) => {
-      if (event.target.classList.contains('tab-btn')) {
-        const tabName = event.target.dataset.tab;
-        if (tabName) {
-          switchTab(tabName);
-        }
+      const tabButton = event.target.closest('.tab-btn');
+      if (!tabButton) return;
+      const tabName = tabButton.dataset.tab;
+      if (tabName) {
+        switchTab(tabName);
       }
     });
 
