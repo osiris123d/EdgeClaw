@@ -1312,27 +1312,6 @@ function renderConfigPage(): string {
       font-weight: 600;
       margin-bottom: 4px;
     }
-    .debug-panel {
-      margin-bottom: 16px;
-      padding: 10px 12px;
-      border-radius: 6px;
-      background: #f8fafc;
-      border: 1px solid #cbd5e1;
-      color: #0f172a;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    .debug-panel-title {
-      font-weight: 600;
-      margin-bottom: 6px;
-    }
-    .debug-panel pre {
-      margin: 0;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-      font-size: 11px;
-    }
     .hint {
       margin-top: 8px;
       font-size: 12px;
@@ -1394,11 +1373,6 @@ function renderConfigPage(): string {
     <div id="status" class="status">Loading config...</div>
 
     <div id="warnings-container"></div>
-
-    <div id="debug-panel" class="debug-panel">
-      <div class="debug-panel-title">Debug Snapshot</div>
-      <pre>Waiting for config load...</pre>
-    </div>
 
     <div class="tabs">
       <button class="tab-btn active" data-tab="general">General</button>
@@ -1583,7 +1557,6 @@ function renderConfigPage(): string {
   <script>
     const statusEl = document.getElementById('status');
     const warningsContainerEl = document.getElementById('warnings-container');
-    const debugPanelEl = document.getElementById('debug-panel');
     const jsonEditorEl = document.getElementById('json-editor');
     const agentsPanelEl = document.getElementById('agents-panel');
     const featuresPanelEl = document.getElementById('features-panel');
@@ -1612,72 +1585,10 @@ function renderConfigPage(): string {
     const saveBtn = document.getElementById('save-btn');
 
     let configState = null;
-    const uiDebugVersion = 'config-ui-debug-2026-04-03-1';
 
     function setStatus(message, isError = false) {
       statusEl.textContent = message;
       statusEl.className = isError ? 'status error' : 'status';
-    }
-
-    function getActiveTabName() {
-      const activeTabEl = document.querySelector('.tab-content.active');
-      if (!activeTabEl || !activeTabEl.id) return 'unknown';
-      return activeTabEl.id.replace('tab-', '');
-    }
-
-    function renderDebugState(source) {
-      if (!debugPanelEl) return;
-      if (!configState) {
-        debugPanelEl.innerHTML = '<div class="debug-panel-title">Debug Snapshot</div><pre>No config loaded yet.</pre>';
-        return;
-      }
-
-      const aiGateway = configState.aiGateway || {};
-      let rawEditorSummary = {
-        parseOk: false,
-        analystRoute: null,
-        chatFreeformRoute: null,
-        toolsRouteName: null,
-        reasoningRouteName: null,
-        error: null
-      };
-      try {
-        const rawParsed = JSON.parse(jsonEditorEl.value || '{}');
-        const rawAiGateway = (rawParsed && rawParsed.aiGateway) || {};
-        const rawRoutes = rawAiGateway.routes || {};
-        const rawRouteClasses = rawAiGateway.routeClasses || {};
-        rawEditorSummary = {
-          parseOk: true,
-          analystRoute: rawRoutes.analyst || null,
-          chatFreeformRoute: rawRoutes.chatFreeform || null,
-          toolsRouteName: rawRouteClasses.tools?.route || null,
-          reasoningRouteName: rawRouteClasses.reasoning?.route || null,
-          error: null
-        };
-      } catch (err) {
-        rawEditorSummary = {
-          parseOk: false,
-          analystRoute: null,
-          chatFreeformRoute: null,
-          toolsRouteName: null,
-          reasoningRouteName: null,
-          error: String(err && err.message ? err.message : err)
-        };
-      }
-
-      const snapshot = {
-        version: uiDebugVersion,
-        source,
-        activeTab: getActiveTabName(),
-        defaultRouteClass: aiGateway.defaultRouteClass || null,
-        routes: aiGateway.routes || {},
-        routeClasses: aiGateway.routeClasses || {},
-        rawEditor: rawEditorSummary
-      };
-
-      debugPanelEl.innerHTML = '<div class="debug-panel-title">Debug Snapshot</div><pre>' +
-        escapeHtml(JSON.stringify(snapshot, null, 2)) +
-        '</pre>';
     }
 
     function commaSplit(value) {
@@ -1685,7 +1596,6 @@ function renderConfigPage(): string {
     }
 
     function switchTab(tabName) {
-      renderDebugState('switchTab:start:' + tabName);
       // Always commit the current tab state before switching.
       const rawJsonTab = document.getElementById('tab-raw-json');
       const isLeavingRawJson = rawJsonTab && rawJsonTab.classList.contains('active');
@@ -1693,7 +1603,6 @@ function renderConfigPage(): string {
       if (isLeavingRawJson) {
         // If JSON is invalid, stay on Raw JSON so the user can fix it.
         if (!updateStateFromRawEditor()) {
-          renderDebugState('switchTab:blocked-invalid-json');
           return;
         }
       } else if (configState) {
@@ -1713,7 +1622,6 @@ function renderConfigPage(): string {
       if (btnEl) {
         btnEl.classList.add('active');
       }
-      renderDebugState('switchTab:end:' + tabName);
     }
 
     function checkValidationWarnings() {
@@ -2031,7 +1939,6 @@ function renderConfigPage(): string {
       renderMcpServers();
       renderWarnings();
       syncRawEditor();
-      renderDebugState('renderForm');
     }
 
     function escapeHtml(value) {
@@ -2086,7 +1993,6 @@ function renderConfigPage(): string {
       configState.metadata.updatedAt = new Date().toISOString();
       syncRawEditor();
       renderWarnings();
-      renderDebugState('updateStateFromForm');
     }
 
     function updateStateFromRawEditor() {
@@ -2094,11 +2000,9 @@ function renderConfigPage(): string {
         configState = JSON.parse(jsonEditorEl.value);
         renderForm();
         setStatus('Raw JSON applied.');
-        renderDebugState('updateStateFromRawEditor:success');
         return true;
       } catch (err) {
         setStatus('Raw JSON parse error: ' + (err.message || 'Invalid JSON'), true);
-        renderDebugState('updateStateFromRawEditor:error');
         return false;
       }
     }
