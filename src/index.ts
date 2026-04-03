@@ -1596,10 +1596,18 @@ function renderConfigPage(): string {
     }
 
     function switchTab(tabName) {
-      // If leaving the Raw JSON tab, parse and apply before re-rendering the destination tab.
+      // Always commit the current tab state before switching.
       const rawJsonTab = document.getElementById('tab-raw-json');
-      if (rawJsonTab && rawJsonTab.classList.contains('active')) {
-        updateStateFromRawEditor();
+      const isLeavingRawJson = rawJsonTab && rawJsonTab.classList.contains('active');
+
+      if (isLeavingRawJson) {
+        // If JSON is invalid, stay on Raw JSON so the user can fix it.
+        if (!updateStateFromRawEditor()) {
+          return;
+        }
+      } else if (configState) {
+        // Capture in-progress form edits even if a specific input/change event did not fire yet.
+        updateStateFromForm();
       }
 
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
