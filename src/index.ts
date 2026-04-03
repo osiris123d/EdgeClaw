@@ -24,7 +24,7 @@ import { normalizeTaskRequest, validateTaskRequest } from "./lib/task-schema";
 import { Env } from "./lib/types";
 import { authenticateRequest, hasValidApiKey } from "./lib/auth";
 import { putTask, getTask, listWorklogEntries, getArtifact } from "./lib/r2";
-import { TaskPacket, TaskType, DomainType } from "./lib/core-task-schema";
+import { TaskPacket, TaskType, DomainType, isTaskType, isDomainType } from "./lib/core-task-schema";
 import { TaskWorkflow } from "./workflows/TaskWorkflow";
 import { AuditStructuredOutput } from "./agents/AuditAgent";
 import { DispatcherAgent } from "./agents/DispatcherAgent";
@@ -2097,7 +2097,9 @@ export default {
           return parsed.response;
         }
         const body = parsed.body as Record<string, unknown>;
+        const action = typeof body.action === "string" ? body.action : "message";
         const content = typeof body.content === "string" ? body.content.trim() : "";
+        const proposalInput = toRecord(body.proposal);
         const userId =
           browserAuth?.mode === "access-browser" && browserAuth.userId
             ? browserAuth.userId
@@ -2105,11 +2107,18 @@ export default {
               ? body.userId
               : session.userId;
 
-        if (!content) {
+        if (action === "message" && !content) {
           return json({ ok: false, error: "content is required." }, 400);
         }
 
-        const userMessage = createChatMessage(sessionId, { role: "user", content });
+        const userTextForLog =
+          action === "run_task"
+            ? `Run proposed task${proposalInput?.title && typeof proposalInput.title === "string" ? `: ${proposalInput.title}` : ""}`
+            : action === "cancel_proposal"
+              ? "Cancel proposed task"
+              : content;
+
+        const userMessage = createChatMessage(sessionId, { role: "user", content: userTextForLog });
         await appendChatMessage(env.R2_ARTIFACTS, userMessage);
 
         const encoder = new TextEncoder();
@@ -2125,9 +2134,12 @@ export default {
                 let assistantText = "";
                 let taskId: string | undefined;
                 let taskStatus: string | undefined;
+                let assistantMeta: Record<string, unknown> | undefined;
 
                 const requestedTaskId = extractTaskIdFromText(content);
-                if (requestedTaskId && isStatusQuery(content)) {
+                if (action === "cancel_proposal") {
+                  assistantText = "Canceled. No task was created. Share a new request when you want another proposal.";
+                } else if (requestedTaskId && isStatusQuery(content)) {
                   const task = await getTask(env.R2_ARTIFACTS, requestedTaskId);
                   if (task) {
                     taskId = task.taskId;
@@ -2140,45 +2152,159 @@ export default {
                   } else {
                     assistantText = `I could not find task ${requestedTaskId}. Try the exact task ID shown in an earlier message.`;
                   }
+                } else if (action === "run_task") {
+                  const proposal = parseTaskProposalInput(proposalInput);
+                  if (!proposal) {
+                    assistantText = "I could not run that proposal because required task fields were missing.";
+                  } else {
+                    const dispatchText = buildDispatcherTextFromProposal(proposal);
+                    const dispatcher = new DispatcherAgent();
+                    const routed = await dispatcher.handleInboundRequest(env, {
+                      userId,
+                      text: dispatchText,
+                      source: "chat",
+                      startWorkflow: false,
+                    });
+
+                    if (routed.ok && routed.taskId) {
+                      taskId = routed.taskId;
+                      taskStatus = "queued";
+
+                      controller.enqueue(encoder.encode(sseEvent({
+                        type: "task",
+                        data: {
+                          taskId,
+                          status: taskStatus,
+                          taskType: routed.taskType,
+                          domain: routed.domain,
+                          title: proposal.title,
+                        },
+                      })));
+
+                      controller.enqueue(encoder.encode(sseEvent({
+                        type: "task_progress",
+                        data: {
+                          taskId,
+                          status: "in_progress",
+                          stage: "workflow_start",
+                          message: "Workflow started from chat",
+                          timestamp: new Date().toISOString(),
+                        },
+                      })));
+
+                      const workflow = new TaskWorkflow();
+                      const runResult = await workflow.run(env, {
+                        taskId,
+                        workflowRunId: crypto.randomUUID(),
+                      });
+
+                      for (const step of runResult.completedSteps ?? []) {
+                        controller.enqueue(encoder.encode(sseEvent({
+                          type: "task_progress",
+                          data: {
+                            taskId,
+                            status: "step_complete",
+                            stage: step,
+                            message: `Step completed: ${step}`,
+                            timestamp: new Date().toISOString(),
+                          },
+                        })));
+                      }
+
+                      controller.enqueue(encoder.encode(sseEvent({
+                        type: "task_progress",
+                        data: {
+                          taskId,
+                          status: runResult.status,
+                          stage: "workflow_end",
+                          message:
+                            runResult.status === "completed"
+                              ? "Task completed"
+                              : runResult.error ?? `Task ended with status ${runResult.status}`,
+                          timestamp: new Date().toISOString(),
+                        },
+                      })));
+
+                      if (runResult.status === "completed") {
+                        const finalTask = await getTask(env.R2_ARTIFACTS, taskId);
+                        const finalOutputArtifact = await getArtifact(env.R2_ARTIFACTS, taskId, "final-output.json");
+                        const finalOutput = (finalOutputArtifact?.body ?? {}) as Record<string, unknown>;
+                        const auditOutput =
+                          finalOutput.auditOutput && typeof finalOutput.auditOutput === "object"
+                            ? (finalOutput.auditOutput as Record<string, unknown>)
+                            : null;
+                        const findings = Array.isArray(auditOutput?.findings)
+                          ? (auditOutput?.findings as unknown[])
+                          : [];
+
+                        const resultCard = {
+                          taskId,
+                          auditVerdict: typeof auditOutput?.verdict === "string" ? auditOutput.verdict : null,
+                          auditScore: typeof auditOutput?.score === "number" ? auditOutput.score : null,
+                          findingCount: findings.length,
+                          completedAt:
+                            (typeof finalOutput.completedAt === "string" && finalOutput.completedAt) ||
+                            finalTask?.updatedAt ||
+                            null,
+                          detailsUrl: `/api/tasks/${taskId}`,
+                        };
+
+                        controller.enqueue(encoder.encode(sseEvent({
+                          type: "task_result",
+                          data: resultCard,
+                        })));
+
+                        assistantMeta = {
+                          renderType: "task_result",
+                          result: resultCard,
+                        };
+
+                        assistantText = [
+                          `Task ${taskId} completed successfully.`,
+                          `Audit: ${resultCard.auditVerdict ?? "n/a"} (score ${resultCard.auditScore ?? "n/a"}).`,
+                          `Findings: ${resultCard.findingCount}.`,
+                        ].join(" ");
+                      } else {
+                        assistantMeta = {
+                          renderType: "task_progress",
+                          progress: {
+                            taskId,
+                            status: runResult.status,
+                            stage: "workflow_end",
+                            message: runResult.error ?? `Task ended with status ${runResult.status}`,
+                            timestamp: new Date().toISOString(),
+                          },
+                        };
+                        assistantText = [
+                          `Task ${taskId} was created but ended with status ${runResult.status}.`,
+                          runResult.error ? `Reason: ${runResult.error}` : "",
+                        ].filter(Boolean).join(" ");
+                      }
+                    } else {
+                      assistantText = `I could not create a task from that proposal: ${routed.error ?? routed.reason ?? "unknown dispatcher error"}.`;
+                    }
+                  }
                 } else if (isTaskLikeMessage(content)) {
-                  // Message-to-task mapping:
-                  // - raw chat text becomes DispatcherInboundRequest.text
-                  // - DispatcherAgent classifies it and creates the TaskPacket
-                  // - assistant response returns the new taskId and queue status
-                  const dispatcher = new DispatcherAgent();
-                  const routed = await dispatcher.handleInboundRequest(env, {
-                    userId,
-                    text: content,
-                    source: "chat",
-                    startWorkflow: false,
-                  });
-
-                  if (routed.ok && routed.taskId) {
-                    taskId = routed.taskId;
-                    taskStatus = "queued";
+                  const proposal = inferTaskProposal(content);
+                  if (proposal) {
+                    assistantMeta = {
+                      renderType: "task_proposal",
+                      proposal,
+                    };
                     assistantText = [
-                      `I created task ${routed.taskId}.`,
-                      `Classification: ${routed.taskType}/${routed.domain} with confidence ${(routed.confidence ?? 0).toFixed(2)}.`,
-
-                      `Use “status ${routed.taskId}” here to check progress later.`,
+                      "I drafted a task proposal from your request.",
+                      "Review the card and choose Run now, Edit, or Cancel.",
                     ].join(" ");
 
                     controller.enqueue(encoder.encode(sseEvent({
-                      type: "task",
-                      data: { taskId, status: taskStatus, taskType: routed.taskType, domain: routed.domain },
+                      type: "task_proposal",
+                      data: { proposal },
                     })));
                   } else {
-                    assistantText = `I could not create a task from that message: ${routed.error ?? routed.reason ?? "unknown dispatcher error"}.`;
+                    assistantText = "I could not confidently infer a task proposal from that message. Please add more detail and expected outcome.";
                   }
                 } else {
-                  assistantText = [
-                    "I can turn task-style requests into queued work items.",
-                    "Examples:",
-                    "- Draft CAB notes for a NAC policy rollback",
-                    "- Summarize this WiFi outage for leadership",
-                    "- Create a weekly network report draft",
-                    "- Status task-123",
-                  ].join(" ");
+                  assistantText = buildGeneralChatReply(content);
                 }
 
                 for (const chunk of chunkText(assistantText, 24)) {
@@ -2193,6 +2319,7 @@ export default {
                   content: assistantText,
                   taskId,
                   taskStatus,
+                  meta: assistantMeta,
                 });
                 await appendChatMessage(env.R2_ARTIFACTS, assistantMessage);
 
@@ -2825,11 +2952,173 @@ function kindToTaskType(kind: string | undefined): TaskType {
   return "incident_triage";
 }
 
-
-
 function isTaskLikeMessage(text: string): boolean {
   const lower = text.toLowerCase();
-  return /\b(draft|summari[sz]e|summary|report|cab|review|analy[sz]e|investigate|triage|vendor|leadership|executive|status)\b/.test(lower);
+  return /\b(create|draft|summari[sz]e|report|review|analy[sz]e|investigat|triage|plan|prepare|assess|run task|work item|ticket)\b/.test(lower);
+}
+
+type ChatRouteClass = "utility" | "tools" | "reasoning" | "vision";
+
+interface ChatTaskProposal {
+  proposalId: string;
+  sourceText: string;
+  taskType: TaskType;
+  domain: DomainType;
+  title: string;
+  confidence: number;
+  routeClass: ChatRouteClass;
+  mcpHints: string[];
+}
+
+function parseTaskProposalInput(value: Record<string, unknown> | null): ChatTaskProposal | null {
+  if (!value) return null;
+  const proposalId = typeof value.proposalId === "string" && value.proposalId ? value.proposalId : crypto.randomUUID();
+  const sourceText = typeof value.sourceText === "string" ? value.sourceText.trim() : "";
+  const title = typeof value.title === "string" ? value.title.trim() : "";
+  const taskType = value.taskType;
+  const domain = value.domain;
+  const confidenceRaw = typeof value.confidence === "number" ? value.confidence : 0.5;
+  const routeClass = value.routeClass;
+  const mcpHints = Array.isArray(value.mcpHints)
+    ? (value.mcpHints.filter((hint) => typeof hint === "string") as string[])
+    : [];
+
+  if (!title || !sourceText) return null;
+  if (!isTaskType(taskType) || !isDomainType(domain)) return null;
+  if (!isRouteClass(routeClass)) return null;
+
+  return {
+    proposalId,
+    sourceText,
+    title,
+    taskType,
+    domain,
+    confidence: Math.max(0, Math.min(1, confidenceRaw)),
+    routeClass,
+    mcpHints,
+  };
+}
+
+function buildDispatcherTextFromProposal(proposal: ChatTaskProposal): string {
+  return [
+    proposal.title,
+    proposal.sourceText,
+    `taskType=${proposal.taskType}`,
+    `domain=${proposal.domain}`,
+    `routeClass=${proposal.routeClass}`,
+  ].join(" | ");
+}
+
+function inferTaskProposal(text: string): ChatTaskProposal | null {
+  const input = text.trim();
+  if (!input) return null;
+
+  const lower = input.toLowerCase();
+  const taskType = inferTaskType(lower);
+  const domain = inferDomain(lower);
+  const confidence = inferProposalConfidence(lower, domain !== "cross_domain");
+  const title = inferTitle(input, taskType);
+  const routeClass = defaultRouteClassForTaskType(taskType);
+
+  return {
+    proposalId: crypto.randomUUID(),
+    sourceText: input,
+    taskType,
+    domain,
+    title,
+    confidence,
+    routeClass,
+    mcpHints: [],
+  };
+}
+
+function inferTaskType(lower: string): TaskType {
+  if (/\b(root cause|rca|postmortem|post-mortem|why did|diagnos|investigat|failure analys)\b/.test(lower)) {
+    return "root_cause_analysis";
+  }
+  if (/\b(change|rollback|deploy|release|cab|approval|policy review)\b/.test(lower)) {
+    return "change_review";
+  }
+  if (/\b(executive|leadership|board|briefing|exec summary|tl;dr)\b/.test(lower)) {
+    return "exec_summary";
+  }
+  if (/\b(vendor|provider|carrier|supplier|partner follow|escalation ticket)\b/.test(lower)) {
+    return "vendor_followup";
+  }
+  if (/\b(draft|write|prepare|report|document|memo|notes)\b/.test(lower)) {
+    return "report_draft";
+  }
+  return "incident_triage";
+}
+
+function inferDomain(lower: string): DomainType {
+  if (/\bwifi|wireless|ssid|access point\b/.test(lower)) return "wifi";
+  if (/\bnac|802\.1x|radius|network access\b/.test(lower)) return "nac";
+  if (/\bztna|zero trust|identity-aware\b/.test(lower)) return "ztna";
+  if (/\btelecom|voice|sip|pbx|carrier\b/.test(lower)) return "telecom";
+  if (/\bcontent filter|web filter|dns filter|secure web gateway\b/.test(lower)) return "content_filtering";
+  return "cross_domain";
+}
+
+function inferProposalConfidence(lower: string, hasDomain: boolean): number {
+  let score = 0.46;
+  if (/\b(create|draft|summari[sz]e|analy[sz]e|review|investigat|triage|prepare|run)\b/.test(lower)) score += 0.2;
+  if (/\b(task|ticket|work item|proposal|plan|report|summary|analysis)\b/.test(lower)) score += 0.16;
+  if (hasDomain) score += 0.08;
+  if (lower.length > 60) score += 0.05;
+  return Math.max(0.35, Math.min(0.98, score));
+}
+
+function defaultRouteClassForTaskType(taskType: TaskType): ChatRouteClass {
+  if (taskType === "root_cause_analysis") return "reasoning";
+  if (taskType === "change_review" || taskType === "vendor_followup") return "tools";
+  if (taskType === "report_draft" || taskType === "exec_summary") return "utility";
+  return "reasoning";
+}
+
+function inferTitle(input: string, taskType: TaskType): string {
+  const firstLine = input.split(/[\n\.]/)[0]?.trim() ?? "";
+  const clean = firstLine.replace(/^please\s+/i, "").replace(/^can you\s+/i, "").trim();
+  if (clean.length >= 12) {
+    return clean.slice(0, 120);
+  }
+  return `Proposed ${taskType.replace(/_/g, " ")}`;
+}
+
+function isRouteClass(value: unknown): value is ChatRouteClass {
+  return value === "utility" || value === "tools" || value === "reasoning" || value === "vision";
+}
+
+function buildGeneralChatReply(content: string): string {
+  const prompt = content.trim();
+  if (!prompt) {
+    return "I can help with both general questions and task proposals. Ask a question, or describe work and I will propose a structured task card.";
+  }
+
+  if (/\b(help|what can you do|capabilit|commands)\b/i.test(prompt)) {
+    return [
+      "I can answer general questions conversationally and also convert task-like requests into structured task proposals.",
+      "When I detect task intent, I show a proposal card with task type, domain, title, and confidence.",
+      "You can Run now, Edit, or Cancel directly from chat.",
+    ].join(" ");
+  }
+
+  if (/\b(route class|gateway|mcp|tooling)\b/i.test(prompt)) {
+    return [
+      "This chat is forward-compatible with AI Gateway route classes (utility/tools/reasoning/vision) and MCP-backed capabilities.",
+      "Current proposals include route-class hints and reserved MCP hints for future orchestration.",
+    ].join(" ");
+  }
+
+  return [
+    "I can discuss this with you directly, and if you decide to operationalize it, I can draft a task proposal card in chat.",
+    "If you want a task, describe the objective, desired output, and any constraints.",
+  ].join(" ");
+}
+
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
 }
 
 function isStatusQuery(text: string): boolean {
