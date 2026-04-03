@@ -1650,12 +1650,12 @@ function renderConfigPage(): string {
           chatFreeform: 'Chat: Freeform Q&A',
           chatDeepReasoning: 'Chat: Deep Reasoning'
         };
-        const routes = (aiGateway as Record<string, unknown>).routes as Record<string, string> | undefined;
+        const routes = aiGateway.routes;
         if (routes && typeof routes === 'object') {
           for (const [assignKey, assignedClass] of Object.entries(routes)) {
             const classCfg = (aiGateway.routeClasses || {})[assignedClass] || {};
             if (assignedClass && !classCfg.enabled) {
-              const label = (routeLabels as Record<string, string>)[assignKey] || assignKey;
+              const label = routeLabels[assignKey] || assignKey;
               warnings.push({
                 type: 'warning',
                 title: 'Assigned route class is disabled',
