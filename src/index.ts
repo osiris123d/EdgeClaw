@@ -2069,7 +2069,9 @@ function renderConfigPage(): string {
     }
 
     document.addEventListener('click', (event) => {
-      const tabButton = event.target.closest('.tab-btn');
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const tabButton = target.closest('.tab-btn');
       if (!tabButton) return;
       const tabName = tabButton.dataset.tab;
       if (tabName) {
@@ -2090,6 +2092,11 @@ function renderConfigPage(): string {
       }
       if (target.dataset.featureKey) {
         configState.features[target.dataset.featureKey] = !!target.checked;
+      }
+      if (target.dataset.routeClassName) {
+        const className = target.dataset.routeClassName;
+        configState.aiGateway.routeClasses[className] = configState.aiGateway.routeClasses[className] || { enabled: false, route: className };
+        configState.aiGateway.routeClasses[className].route = (target.value || '').trim();
       }
       updateStateFromForm();
     });
