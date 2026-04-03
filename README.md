@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Cloudflare-Native Conversational Agent Prototype
 
 A production-ready, serverless conversational task system on Cloudflare Workers.
@@ -141,6 +140,36 @@ HTTP Router (src/index.ts)
 |---|---|
 | `TaskWorkflow.ts` | End-to-end step orchestration, approval pause/resume, finalization |
 | `TaskCoordinatorDO.ts` | Per-task lease, step state, and workflow coordination |
+
+## 🧠 Chat Capabilities
+
+The chat interface now supports:
+- Task proposal from natural language
+- Task execution ("Run now")
+- Task status queries ("show me the last task")
+- Follow-up commands ("run that now")
+- Freeform AI responses via AI Gateway
+
+## 🔐 Authentication Model
+
+EdgeClaw uses a dual-mode authentication model:
+
+- Browser UI (Chat, Task Console, System) → authenticated via Cloudflare Access
+- API routes (/tasks, automation) → authenticated via API key
+
+This allows:
+- secure browser UX without exposing API keys
+- continued support for automation and scripting
+
+
+## 🤖 AI Gateway Integration
+
+EdgeClaw supports Cloudflare AI Gateway for:
+- freeform conversational responses
+- enhanced task analysis
+- future multi-model routing (utility, tools, reasoning, vision)
+
+AI usage is configurable and falls back to deterministic behavior when unavailable.
 
 ## Setup & Local Development
 
@@ -340,7 +369,5 @@ Create a LICENSE file for this project using MIT license.
 Include my name as the author.
 
 Built with Cloudflare Workers, Durable Objects, R2, and TypeScript.
-=======
 # EdgeClaw
 A Cloudflare-native port of OpenClaw, running on Cloudflare’s Agents SDK, designed for low-latency, edge-native automation.
->>>>>>> e0db38d0d600464c12eb809c3d7c6b4e26c814b5
