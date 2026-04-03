@@ -1633,13 +1633,46 @@ function renderConfigPage(): string {
       }
 
       const aiGateway = configState.aiGateway || {};
+      let rawEditorSummary = {
+        parseOk: false,
+        analystRoute: null,
+        chatFreeformRoute: null,
+        toolsRouteName: null,
+        reasoningRouteName: null,
+        error: null
+      };
+      try {
+        const rawParsed = JSON.parse(jsonEditorEl.value || '{}');
+        const rawAiGateway = (rawParsed && rawParsed.aiGateway) || {};
+        const rawRoutes = rawAiGateway.routes || {};
+        const rawRouteClasses = rawAiGateway.routeClasses || {};
+        rawEditorSummary = {
+          parseOk: true,
+          analystRoute: rawRoutes.analyst || null,
+          chatFreeformRoute: rawRoutes.chatFreeform || null,
+          toolsRouteName: rawRouteClasses.tools?.route || null,
+          reasoningRouteName: rawRouteClasses.reasoning?.route || null,
+          error: null
+        };
+      } catch (err) {
+        rawEditorSummary = {
+          parseOk: false,
+          analystRoute: null,
+          chatFreeformRoute: null,
+          toolsRouteName: null,
+          reasoningRouteName: null,
+          error: String(err && err.message ? err.message : err)
+        };
+      }
+
       const snapshot = {
         version: uiDebugVersion,
         source,
         activeTab: getActiveTabName(),
         defaultRouteClass: aiGateway.defaultRouteClass || null,
         routes: aiGateway.routes || {},
-        routeClasses: aiGateway.routeClasses || {}
+        routeClasses: aiGateway.routeClasses || {},
+        rawEditor: rawEditorSummary
       };
 
       debugPanelEl.innerHTML = '<div class="debug-panel-title">Debug Snapshot</div><pre>' +
