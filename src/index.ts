@@ -1596,6 +1596,12 @@ function renderConfigPage(): string {
     }
 
     function switchTab(tabName) {
+      // If leaving the Raw JSON tab, parse and apply before re-rendering the destination tab.
+      const rawJsonTab = document.getElementById('tab-raw-json');
+      if (rawJsonTab && rawJsonTab.classList.contains('active')) {
+        updateStateFromRawEditor();
+      }
+
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
       document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
       
@@ -1633,6 +1639,30 @@ function renderConfigPage(): string {
             title: 'Default route class is not enabled',
             message: 'Default route class "' + defaultClass + '" is disabled. Enable it in the Route Classes section.'
           });
+        }
+      }
+
+      if (aiGateway.enabled) {
+        const routeLabels = {
+          classifier: 'Classifier Agent',
+          analyst: 'Analyst Agent',
+          audit: 'Audit Agent',
+          chatFreeform: 'Chat: Freeform Q&A',
+          chatDeepReasoning: 'Chat: Deep Reasoning'
+        };
+        const routes = (aiGateway as Record<string, unknown>).routes as Record<string, string> | undefined;
+        if (routes && typeof routes === 'object') {
+          for (const [assignKey, assignedClass] of Object.entries(routes)) {
+            const classCfg = (aiGateway.routeClasses || {})[assignedClass] || {};
+            if (assignedClass && !classCfg.enabled) {
+              const label = (routeLabels as Record<string, string>)[assignKey] || assignKey;
+              warnings.push({
+                type: 'warning',
+                title: 'Assigned route class is disabled',
+                message: '"' + label + '" is assigned to route class "' + assignedClass + '" but that class is disabled. Enable it in the Route Classes section.'
+              });
+            }
+          }
         }
       }
 

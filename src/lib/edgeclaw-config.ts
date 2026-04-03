@@ -205,6 +205,23 @@ export function validateEdgeClawConfig(obj: unknown): {
           }
         }
       }
+
+      const routes = (cfg.aiGateway as Record<string, unknown>).routes;
+      if (routes !== undefined) {
+        if (typeof routes !== "object" || routes === null || Array.isArray(routes)) {
+          errors.push("aiGateway.routes must be an object when provided");
+        } else {
+          for (const [assignmentKey, assignedClass] of Object.entries(routes as Record<string, unknown>)) {
+            if (typeof assignedClass !== "string") {
+              errors.push(`aiGateway.routes.${assignmentKey} must be a string`);
+            } else if (!(validRouteClasses as string[]).includes(assignedClass)) {
+              errors.push(
+                `aiGateway.routes.${assignmentKey} has invalid route class "${assignedClass}"; must be one of: ${validRouteClasses.join(", ")}`
+              );
+            }
+          }
+        }
+      }
     }
   }
 
