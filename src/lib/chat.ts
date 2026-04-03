@@ -36,6 +36,7 @@ export interface ChatSession {
   title: string;
   createdAt: string;
   updatedAt: string;
+  userName?: string;
 }
 
 export interface ChatMessage {

@@ -2104,12 +2104,23 @@ export default {
         const action = typeof body.action === "string" ? body.action : "message";
         const content = typeof body.content === "string" ? body.content.trim() : "";
         const proposalInput = toRecord(body.proposal);
+        const declaredUserName = action === "message" ? extractDeclaredUserName(content) : null;
         const userId =
           browserAuth?.mode === "access-browser" && browserAuth.userId
             ? browserAuth.userId
             : typeof body.userId === "string" && body.userId
               ? body.userId
               : session.userId;
+        let sessionUserName = typeof session.userName === "string" && session.userName.trim()
+          ? session.userName.trim()
+          : null;
+
+        if (declaredUserName) {
+          session.userName = declaredUserName;
+          session.updatedAt = new Date().toISOString();
+          sessionUserName = declaredUserName;
+          await putChatSession(env.R2_ARTIFACTS, session);
+        }
 
         if (action === "message" && !content) {
           return json({ ok: false, error: "content is required." }, 400);
@@ -2141,7 +2152,13 @@ export default {
                 let assistantMeta: Record<string, unknown> | undefined;
 
                 const requestedTaskId = extractTaskIdFromText(content);
-                if (action === "cancel_proposal") {
+                if (declaredUserName) {
+                  assistantText = `Nice to meet you, ${declaredUserName}. I will remember your name in this chat session.`;
+                  assistantMeta = {
+                    renderType: "assistant_text",
+                    userName: declaredUserName,
+                  };
+                } else if (action === "cancel_proposal") {
                   assistantText = "Canceled. No task was created. Share a new request when you want another proposal.";
                 } else if (requestedTaskId && isStatusQuery(content)) {
                   const task = await getTask(env.R2_ARTIFACTS, requestedTaskId);
@@ -2340,7 +2357,12 @@ export default {
                       controller.enqueue(encoder.encode(sseEvent(evt)));
                     }
                   } else {
-                    const freeform = await answerFreeformWithAIGateway(env, content, historyMessages);
+                    const freeform = await answerFreeformWithAIGateway(
+                      env,
+                      content,
+                      historyMessages,
+                      sessionUserName
+                    );
                     if (freeform.ok && freeform.text) {
                       assistantText = freeform.text;
                       assistantMeta = {
@@ -2348,10 +2370,11 @@ export default {
                         aiRouteClass: freeform.routeClass,
                         aiRoute: freeform.route,
                         aiRouteSource: freeform.routeSource,
+                        userName: sessionUserName,
                       };
                     } else {
                       // Deterministic fallback is used only after chat_action and AI freeform paths fail.
-                      assistantText = buildGeneralChatReply(content);
+                      assistantText = buildGeneralChatReply(content, sessionUserName);
                     }
                   }
                 }
@@ -3138,15 +3161,16 @@ function isRouteClass(value: unknown): value is ChatRouteClass {
   return value === "utility" || value === "tools" || value === "reasoning" || value === "vision";
 }
 
-function buildGeneralChatReply(content: string): string {
+function buildGeneralChatReply(content: string, userName?: string | null): string {
   const prompt = content.trim();
+  const namePrefix = userName ? `${userName}, ` : "";
   if (!prompt) {
-    return "I can help with both general questions and task proposals. Ask a question, or describe work and I will propose a structured task card.";
+    return `${namePrefix}I can help with both general questions and task proposals. Ask a question, or describe work and I will propose a structured task card.`;
   }
 
   if (/\b(help|what can you do|capabilit|commands)\b/i.test(prompt)) {
     return [
-      "I can answer general questions conversationally and also convert task-like requests into structured task proposals.",
+      `${namePrefix}I can answer general questions conversationally and also convert task-like requests into structured task proposals.`,
       "When I detect task intent, I show a proposal card with task type, domain, title, and confidence.",
       "You can Run now, Edit, or Cancel directly from chat.",
     ].join(" ");
@@ -3364,7 +3388,8 @@ async function resolveChatActionFromHistory(
 async function answerFreeformWithAIGateway(
   env: Env,
   content: string,
-  historyMessages: ChatMessage[]
+  historyMessages: ChatMessage[],
+  userName?: string | null
 ): Promise<{
   ok: boolean;
   text: string | null;
@@ -3396,7 +3421,8 @@ async function answerFreeformWithAIGateway(
     token,
     selected,
     content,
-    promptContext
+    promptContext,
+    userName
   );
 
   if (primary.ok) {
@@ -3415,7 +3441,8 @@ async function answerFreeformWithAIGateway(
       token,
       alternate,
       content,
-      promptContext
+      promptContext,
+      userName
     );
     if (secondary.ok) {
       return {
@@ -3477,11 +3504,16 @@ async function callFreeformAIGateway(
   token: string,
   selected: ReturnType<typeof selectAIGatewayRoute>,
   content: string,
-  promptContext: string
+  promptContext: string,
+  userName?: string | null
 ): Promise<{ ok: boolean; text: string | null; routeSource: string }> {
   if (!selected.baseUrl || !selected.route) {
     return { ok: false, text: null, routeSource: selected.reason };
   }
+
+  const identityContext = userName
+    ? `The user's preferred name in this session is \"${userName}\". Use it naturally when appropriate.`
+    : "The user name is unknown for this session.";
 
   const response = await fetch(`${selected.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
@@ -3501,6 +3533,10 @@ async function callFreeformAIGateway(
           role: "system",
           content:
             "You are an operator assistant. Answer clearly and concisely. Do not invent unavailable task state; ask for clarification when needed.",
+        },
+        {
+          role: "system",
+          content: identityContext,
         },
         {
           role: "system",
@@ -3657,6 +3693,16 @@ function extractFreeformModelText(payload: Record<string, unknown>): string | nu
   const outputText = payload.output_text;
   if (typeof outputText === "string" && outputText.trim()) return outputText.trim();
   return null;
+}
+
+function extractDeclaredUserName(content: string): string | null {
+  const match = content.match(/\bmy name is\s+([a-z][a-z\-'\s]{0,50})$/i);
+  if (!match) return null;
+  const cleaned = match[1].trim().replace(/\s+/g, " ");
+  if (!cleaned) return null;
+  // Keep lightweight and safe: letters, spaces, apostrophes, hyphens only.
+  if (!/^[a-z][a-z\-'\s]{0,50}$/i.test(cleaned)) return null;
+  return cleaned;
 }
 
 function isLeaseConflictRunFailure(status: string, error: string | undefined): boolean {
