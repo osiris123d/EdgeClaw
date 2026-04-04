@@ -316,6 +316,7 @@ export function renderChatPage(): string {
       border-left: 4px solid #64748b;
       background: #f8fafc;
       color: #1a1a1a;
+      line-height: 1.5;
       white-space: pre-wrap;
       word-wrap: break-word;
     }
@@ -720,17 +721,19 @@ export function renderChatPage(): string {
       currentLiveAssistant = document.createElement('div');
       currentLiveAssistant.className = 'message assistant';
       currentLiveAssistant.dataset.live = 'true';
-      const bubble = document.createElement('div');
-      bubble.className = 'message-bubble';
-      currentLiveAssistant.appendChild(bubble);
+      const card = document.createElement('div');
+      card.className = 'assistant-text-card';
+      currentLiveAssistant.appendChild(card);
       messagesEl.appendChild(currentLiveAssistant);
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
     function updateLiveAssistant(text) {
       if (!currentLiveAssistant) startLiveAssistant();
-      const bubble = currentLiveAssistant.querySelector('.message-bubble');
-      bubble.textContent = text;
+      const card = currentLiveAssistant.querySelector('.assistant-text-card, .message-bubble');
+      if (card) {
+        card.textContent = text;
+      }
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
