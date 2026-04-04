@@ -14,6 +14,7 @@ export interface AIGatewayRouteSelectionInput {
 export type AIGatewayRouteSelectionSource =
   | "preferred"
   | "selection_rule"
+  | "gateway_assignment"
   | "model_by_task_type"
   | "model_by_agent"
   | "model_default"
@@ -100,6 +101,15 @@ export function selectRouteClass(
       routeClass: matchedRule.routeClass,
       source: "selection_rule",
       reason: "Matched aiGateway.selectionRules.",
+    };
+  }
+
+  const assignedRouteClass = getAssignedRouteClass(config, input);
+  if (assignedRouteClass) {
+    return {
+      routeClass: assignedRouteClass,
+      source: "gateway_assignment",
+      reason: "Matched aiGateway.routes assignment.",
     };
   }
 
@@ -195,4 +205,23 @@ function normalizeNonEmptyString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function getAssignedRouteClass(
+  config: EdgeClawConfig,
+  input: AIGatewayRouteSelectionInput
+): AIGatewayRouteClass | null {
+  const routes = config.aiGateway?.routes;
+  if (!routes) return null;
+
+  // Current runtime authority is intentionally limited to analyst assignment.
+  // Other UI assignments remain metadata until their runtime call sites are wired.
+  if (input.agentRole === "analyst") {
+    const assigned = routes.analyst;
+    if (assigned === "utility" || assigned === "tools" || assigned === "reasoning" || assigned === "vision") {
+      return assigned;
+    }
+  }
+
+  return null;
 }

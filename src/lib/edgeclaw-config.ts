@@ -34,6 +34,13 @@ export interface EdgeClawAIGatewayConfig {
   baseUrl?: string;
   defaultRouteClass?: AIGatewayRouteClass;
   routeClasses: Record<AIGatewayRouteClass, EdgeClawAIGatewayRouteClassConfig>;
+  routes?: Partial<{
+    classifier: AIGatewayRouteClass;
+    analyst: AIGatewayRouteClass;
+    audit: AIGatewayRouteClass;
+    chatFreeform: AIGatewayRouteClass;
+    chatDeepReasoning: AIGatewayRouteClass;
+  }>;
   selectionRules?: EdgeClawAIGatewaySelectionRule[];
 }
 

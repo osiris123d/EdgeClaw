@@ -22,7 +22,7 @@ import {
 } from "./durable/TaskCoordinatorDO";
 import { normalizeTaskRequest, validateTaskRequest } from "./lib/task-schema";
 import { Env } from "./lib/types";
-import { authenticateRequest, hasValidApiKey } from "./lib/auth";
+import { authenticateRequest, hasValidApiKey, type AuthResult } from "./lib/auth";
 import { putTask, getTask, listWorklogEntries, getArtifact } from "./lib/r2";
 import { TaskPacket, TaskType, DomainType, isTaskType, isDomainType } from "./lib/core-task-schema";
 import { TaskWorkflow } from "./workflows/TaskWorkflow";
@@ -126,13 +126,65 @@ function getConfiguredApiKey(env: Env): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function getBrowserIdentity(auth: ReturnType<typeof authenticateRequest>): Record<string, unknown> {
+function getBrowserIdentity(auth: AuthResult): Record<string, unknown> {
   return {
     mode: auth.mode,
     userId: auth.userId ?? null,
     email: auth.email ?? null,
     accessSubject: auth.accessSubject ?? null,
   };
+}
+
+async function loadRuntimeAuthPolicy(bucket: any): Promise<{ allowApiKeyAuth: boolean; allowedAccessTeams: string[] }> {
+  const cfg = await getEdgeClawConfig(bucket);
+  const allowApiKeyAuth = cfg?.security?.allowApiKeyAuth ?? true;
+  const allowedAccessTeams = Array.isArray(cfg?.security?.allowedAccessTeams)
+    ? cfg!.security!.allowedAccessTeams
+        .filter((team): team is string => typeof team === "string")
+        .map((team) => team.trim())
+        .filter((team) => team.length > 0)
+    : [];
+
+  return { allowApiKeyAuth, allowedAccessTeams };
+}
+
+function parseTeamHeader(value: string | null): string[] {
+  if (!value) return [];
+  return value
+    .split(/[;,]/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function getRequestAccessTeams(request: Request): string[] {
+  const headersToCheck = [
+    "Cf-Access-Authenticated-User-Groups",
+    "Cf-Access-Groups",
+    "Cf-Access-Authenticated-User-Teams",
+    "X-Access-Teams",
+  ];
+
+  const allTeams: string[] = [];
+  for (const header of headersToCheck) {
+    allTeams.push(...parseTeamHeader(request.headers.get(header)));
+  }
+
+  return allTeams;
+}
+
+function isAccessTeamAuthorized(
+  request: Request,
+  auth: AuthResult | null,
+  allowedAccessTeams: string[]
+): boolean {
+  if (allowedAccessTeams.length === 0) return true;
+  if (!auth || auth.mode !== "access-browser") return true;
+
+  const requestTeams = getRequestAccessTeams(request);
+  if (requestTeams.length === 0) return false;
+
+  const allowed = new Set(allowedAccessTeams.map((team) => team.toLowerCase()));
+  return requestTeams.some((team) => allowed.has(team.toLowerCase()));
 }
 
 // ─── Config Storage Helpers ────────────────────────────────────────────────
@@ -1467,7 +1519,7 @@ function renderConfigPage(): string {
           <div id="route-classes-panel"></div>
 
           <h3>Route Assignments</h3>
-          <p style="margin: 0 0 12px; font-size: 13px; color: #666;">Assign specific route classes to different agents and operations:</p>
+          <p style="margin: 0 0 12px; font-size: 13px; color: #666;">Assign specific route classes to different agents and operations. Runtime currently enforces <strong>Analyst Agent</strong> assignment; other entries are metadata-only until their runtime call sites are wired.</p>
           <div class="route-assignments" id="route-assignments-panel"></div>
         </section>
       </div>
@@ -2155,7 +2207,7 @@ export default {
       const { pathname, origin } = url;
       const baseUrl = origin;
       const browserAuth = isBrowserFacingRoute(pathname) || isConfigApiRoute(pathname)
-        ? authenticateRequest(request, env)
+        ? await authenticateRequest(request, env)
         : null;
 
       // ── GET /health ───────────────────────────────────────────────────────
@@ -2205,9 +2257,17 @@ export default {
         return json({ ok: ready, checks, errors: errors.length > 0 ? errors : undefined }, ready ? 200 : 503);
       }
 
+      const authPolicy = await loadRuntimeAuthPolicy(env.R2_ARTIFACTS);
+
       // ── GET / ─────────────────────────────────────────────────────────────
       // App shell with navigation hub to all main pages.
       if (request.method === "GET" && pathname === "/") {
+        if (!browserAuth?.isAuthenticated) {
+          return json({ ok: false, error: "Unauthorized." }, 401);
+        }
+        if (!isAccessTeamAuthorized(request, browserAuth, authPolicy.allowedAccessTeams)) {
+          return json({ ok: false, error: "Forbidden: Access team not allowed." }, 403);
+        }
         return new Response(renderAppShell(), {
           status: 200,
           headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -2217,6 +2277,12 @@ export default {
       // ── GET /system ────────────────────────────────────────────────────────
       // System status dashboard: health, readiness, task activity.
       if (request.method === "GET" && pathname === "/system") {
+        if (!browserAuth?.isAuthenticated) {
+          return json({ ok: false, error: "Unauthorized." }, 401);
+        }
+        if (!isAccessTeamAuthorized(request, browserAuth, authPolicy.allowedAccessTeams)) {
+          return json({ ok: false, error: "Forbidden: Access team not allowed." }, 403);
+        }
         return new Response(renderSystemPage(), {
           status: 200,
           headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -2229,6 +2295,9 @@ export default {
         if (!browserAuth?.isAuthenticated) {
           return json({ ok: false, error: "Unauthorized." }, 401);
         }
+        if (!isAccessTeamAuthorized(request, browserAuth, authPolicy.allowedAccessTeams)) {
+          return json({ ok: false, error: "Forbidden: Access team not allowed." }, 403);
+        }
         return new Response(renderConfigPage(), {
           status: 200,
           headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -2237,6 +2306,9 @@ export default {
 
       if (isConfigApiRoute(pathname)) {
         if (!browserAuth?.isAuthenticated) {
+          if (!authPolicy.allowApiKeyAuth) {
+            return json({ ok: false, error: "Forbidden: API key auth disabled by config." }, 403);
+          }
           const configuredApiKey = getConfiguredApiKey(env);
           if (!configuredApiKey) {
             console.error("Protected routes requested but API key is not configured", { pathname });
@@ -2246,8 +2318,13 @@ export default {
           if (!hasValidApiKey(request, configuredApiKey)) {
             return json({ ok: false, error: "Unauthorized." }, 401);
           }
+        } else if (!isAccessTeamAuthorized(request, browserAuth, authPolicy.allowedAccessTeams)) {
+          return json({ ok: false, error: "Forbidden: Access team not allowed." }, 403);
         }
       } else if (isApiKeyOnlyRoute(pathname)) {
+        if (!authPolicy.allowApiKeyAuth) {
+          return json({ ok: false, error: "Forbidden: API key auth disabled by config." }, 403);
+        }
         const configuredApiKey = getConfiguredApiKey(env);
         if (!configuredApiKey) {
           console.error("Protected routes requested but API key is not configured", { pathname });
@@ -2261,7 +2338,13 @@ export default {
         if (!browserAuth?.isAuthenticated) {
           return json({ ok: false, error: "Unauthorized." }, 401);
         }
+        if (!isAccessTeamAuthorized(request, browserAuth, authPolicy.allowedAccessTeams)) {
+          return json({ ok: false, error: "Forbidden: Access team not allowed." }, 403);
+        }
       } else if (isProtectedApiPath(pathname)) {
+        if (!authPolicy.allowApiKeyAuth) {
+          return json({ ok: false, error: "Forbidden: API key auth disabled by config." }, 403);
+        }
         const configuredApiKey = getConfiguredApiKey(env);
         if (!configuredApiKey) {
           console.error("Protected routes requested but API key is not configured", { pathname });
@@ -3739,8 +3822,38 @@ async function answerFreeformWithAIGateway(
   route: string | null;
   routeSource: string;
 }> {
+  const logRouting = (payload: {
+    routeClass: ChatRouteClass;
+    routeSource: string;
+    reason: string;
+    fallbackReason: string | null;
+    mode: string;
+  }) => {
+    const vars = env as unknown as Record<string, unknown>;
+    if (vars.ENVIRONMENT !== "production") return;
+    console.log(JSON.stringify({
+      ts: new Date().toISOString(),
+      level: "info",
+      event: "ai_route_decision",
+      agentRole: "chat",
+      taskId: null,
+      routeClass: payload.routeClass,
+      routeSource: payload.routeSource,
+      reason: payload.reason,
+      fallbackReason: payload.fallbackReason,
+      mode: payload.mode,
+    }));
+  };
+
   const token = env.AI_GATEWAY_TOKEN;
   if (!token) {
+    logRouting({
+      routeClass: "utility",
+      routeSource: "missing_token",
+      reason: "AI Gateway token missing.",
+      fallbackReason: "AI_GATEWAY_TOKEN is missing.",
+      mode: "deterministic",
+    });
     return { ok: false, text: null, routeClass: "utility", route: null, routeSource: "missing_token" };
   }
 
@@ -3749,6 +3862,13 @@ async function answerFreeformWithAIGateway(
   const selected = routeAttempt.selected;
 
   if (!selected.enabled || !selected.baseUrl || !selected.route) {
+    logRouting({
+      routeClass: selected.routeClass,
+      routeSource: selected.source,
+      reason: selected.reason,
+      fallbackReason: selected.reason,
+      mode: "deterministic",
+    });
     return {
       ok: false,
       text: null,
@@ -3768,6 +3888,13 @@ async function answerFreeformWithAIGateway(
   );
 
   if (primary.ok) {
+    logRouting({
+      routeClass: selected.routeClass,
+      routeSource: selected.source,
+      reason: selected.reason,
+      fallbackReason: null,
+      mode: "ai-gateway",
+    });
     return {
       ok: true,
       text: primary.text,
@@ -3787,6 +3914,13 @@ async function answerFreeformWithAIGateway(
       userName
     );
     if (secondary.ok) {
+      logRouting({
+        routeClass: alternate.routeClass,
+        routeSource: alternate.source,
+        reason: alternate.reason,
+        fallbackReason: selected.reason,
+        mode: "ai-gateway",
+      });
       return {
         ok: true,
         text: secondary.text,
@@ -3797,6 +3931,13 @@ async function answerFreeformWithAIGateway(
     }
   }
 
+  logRouting({
+    routeClass: selected.routeClass,
+    routeSource: selected.source,
+    reason: selected.reason,
+    fallbackReason: primary.routeSource,
+    mode: "deterministic",
+  });
   return {
     ok: false,
     text: null,

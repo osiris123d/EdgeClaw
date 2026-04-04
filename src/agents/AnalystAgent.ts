@@ -234,6 +234,9 @@ export class AnalystAgent {
    */
   async analyzeTask(env: Env, input: AnalystTaskInput): Promise<AgentResult<AnalystStructuredOutput>> {
     let selectedRouteClass: string | null = null;
+    let selectedRouteSource: string | null = null;
+    let selectedRouteReason: string | null = null;
+    let selectedFallbackReason: string | null = null;
     let selectedMode: "deterministic" | "ai-gateway" = "deterministic";
 
     try {
@@ -243,6 +246,9 @@ export class AnalystAgent {
         data: {
           taskType: input.task.taskType,
           routeClass: selectedRouteClass,
+          routeSource: selectedRouteSource,
+          reason: selectedRouteReason,
+          fallbackReason: selectedFallbackReason,
           mode: selectedMode,
         },
       });
@@ -261,10 +267,16 @@ export class AnalystAgent {
           mode = "ai_assisted";
           selectedMode = "ai-gateway";
           selectedRouteClass = ai.routeClass;
+          selectedRouteSource = ai.routeSource;
+          selectedRouteReason = ai.reason;
+          selectedFallbackReason = ai.fallbackReason;
         } else {
           aiWarnings.push("AI Gateway unavailable; deterministic analysis used.");
           selectedMode = "deterministic";
           selectedRouteClass = ai?.routeClass ?? null;
+          selectedRouteSource = ai?.routeSource ?? null;
+          selectedRouteReason = ai?.reason ?? null;
+          selectedFallbackReason = ai?.fallbackReason ?? "AI Gateway unavailable; deterministic analysis used.";
         }
       }
 
@@ -283,6 +295,9 @@ export class AnalystAgent {
           mode: selectedMode,
           taskType: input.task.taskType,
           routeClass: selectedRouteClass,
+          routeSource: selectedRouteSource,
+          reason: selectedRouteReason,
+          fallbackReason: selectedFallbackReason,
           confidence: output.confidence,
           findingCount: output.facts.length,
         },
@@ -302,6 +317,9 @@ export class AnalystAgent {
           error: toErrorMessage(error),
           taskType: input.task.taskType,
           routeClass: selectedRouteClass,
+          routeSource: selectedRouteSource,
+          reason: selectedRouteReason,
+          fallbackReason: selectedFallbackReason,
           mode: selectedMode,
         },
       });
@@ -323,7 +341,13 @@ export class AnalystAgent {
     env: Env,
     input: AnalystTaskInput,
     prompt: string
-  ): Promise<{ text: string | null; routeClass: string | null }> {
+  ): Promise<{
+    text: string | null;
+    routeClass: string | null;
+    routeSource: string | null;
+    reason: string | null;
+    fallbackReason: string | null;
+  }> {
     const config = await this.loadEdgeClawConfig(env);
     const selected = selectAIGatewayRoute(config, {
       taskType: input.task.taskType,
@@ -333,7 +357,13 @@ export class AnalystAgent {
 
     const token = env.AI_GATEWAY_TOKEN;
     if (!token) {
-      return { text: null, routeClass: selected.routeClass };
+      return {
+        text: null,
+        routeClass: selected.routeClass,
+        routeSource: selected.source,
+        reason: selected.reason,
+        fallbackReason: "AI_GATEWAY_TOKEN is missing.",
+      };
     }
 
     // Prefer config-driven mapping, but preserve current env-var behavior when
@@ -343,7 +373,13 @@ export class AnalystAgent {
     const routeClass = selected.enabled ? selected.routeClass : AnalystAgent.ENV_FALLBACK_ROUTE_CLASS;
 
     if (!baseUrl || !route) {
-      return { text: null, routeClass };
+      return {
+        text: null,
+        routeClass,
+        routeSource: selected.source,
+        reason: selected.reason,
+        fallbackReason: "Selected route is unavailable or incomplete.",
+      };
     }
 
     // Cloudflare AI Gateway OpenAI-compat endpoint: POST <baseUrl>/chat/completions
@@ -383,6 +419,9 @@ export class AnalystAgent {
     return {
       text: extractModelText(raw),
       routeClass,
+      routeSource: selected.source,
+      reason: selected.reason,
+      fallbackReason: null,
     };
   }
 
