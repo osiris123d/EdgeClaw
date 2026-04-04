@@ -883,6 +883,11 @@ export function renderChatPage(): string {
               } else if (evt.type === 'approval_request') {
                 appendApprovalRequestCard(evt.data);
               } else if (evt.type === 'done') {
+                const finalContent = typeof evt.data?.content === 'string' ? evt.data.content : assistantText;
+                if (finalContent) {
+                  assistantText = finalContent;
+                  updateLiveAssistant(assistantText);
+                }
                 finalizeLiveAssistant();
               }
             } catch (parseErr) {
