@@ -279,27 +279,64 @@ function renderTasksConsole(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Tasks Console</title>
   <style>
+    :root {
+      --ec-bg: #0B0F14;
+      --ec-surface: #111827;
+      --ec-surface-2: #1A2230;
+      --ec-text: #F5F7FA;
+      --ec-text-muted: #B6C0CC;
+      --ec-border: #2A3442;
+      --ec-orange: #F48120;
+      --ec-amber: #FFB347;
+      --ec-focus: #FFC978;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: "Space Grotesk", "Sora", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--ec-bg);
+      color: var(--ec-text);
       font-size: 14px;
     }
     .top-strip {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 10px 20px;
+      background: var(--ec-surface);
+      border-bottom: 1px solid var(--ec-border);
+      padding: 12px 20px;
       font-size: 13px;
-      color: #666;
+      color: var(--ec-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
     .top-strip a {
-      color: #2563eb;
+      color: var(--ec-text);
       text-decoration: none;
       font-weight: 600;
     }
     .top-strip a:hover { text-decoration: underline; }
+    .ec-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--ec-text);
+    }
+    .ec-logo-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: linear-gradient(135deg, var(--ec-orange), var(--ec-amber));
+      box-shadow: 0 0 0 1px rgba(244, 129, 32, 0.2);
+      flex: 0 0 auto;
+    }
+    .ec-logo-text {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .breadcrumb {
+      color: var(--ec-text-muted);
+    }
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -308,39 +345,41 @@ function renderTasksConsole(): string {
     header {
       margin-bottom: 24px;
       padding-bottom: 16px;
-      border-bottom: 2px solid #e0e0e0;
+      border-bottom: 1px solid var(--ec-border);
     }
-    h1 { margin: 0; font-size: 24px; }
-    .subtitle { color: #666; margin: 4px 0 0; }
+    h1 { margin: 0; font-size: 28px; }
+    .subtitle { color: var(--ec-text-muted); margin: 6px 0 0; }
     
     .layout { display: grid; grid-template-columns: 300px 1fr; gap: 20px; }
     
     .task-list {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      border: 1px solid var(--ec-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       max-height: 600px;
       overflow-y: auto;
     }
     .task-item {
       padding: 12px 16px;
-      border-bottom: 1px solid #e0e0e0;
+      border-bottom: 1px solid var(--ec-border);
       cursor: pointer;
       transition: background 0.15s;
     }
-    .task-item:hover { background: #f9f9f9; }
-    .task-item.selected { background: #e3f2fd; border-left: 3px solid #2563eb; }
-    .task-id { font-size: 13px; font-weight: 600; color: #2563eb; }
-    .task-status { font-size: 12px; color: #999; margin-top: 4px; }
+    .task-item:hover { background: var(--ec-surface-2); }
+    .task-item.selected { background: rgba(244, 129, 32, 0.12); border-left: 3px solid var(--ec-orange); }
+    .task-id { font-size: 13px; font-weight: 600; color: var(--ec-amber); }
+    .task-status { font-size: 12px; color: var(--ec-text-muted); margin-top: 4px; }
     
     .task-detail {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      padding: 20px;
+      border: 1px solid var(--ec-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      padding: 22px;
       min-height: 600px;
     }
-    .detail-empty { color: #999; font-style: italic; }
+    .detail-empty { color: var(--ec-text-muted); font-style: italic; }
     
     .detail-row {
       display: grid;
@@ -348,9 +387,9 @@ function renderTasksConsole(): string {
       gap: 12px;
       margin-bottom: 12px;
       padding-bottom: 12px;
-      border-bottom: 1px solid #f0f0f0;
+      border-bottom: 1px solid var(--ec-border);
     }
-    .detail-label { font-weight: 600; color: #666; }
+    .detail-label { font-weight: 600; color: var(--ec-text-muted); }
     .detail-value { white-space: pre-wrap; word-break: break-word; }
     
     .badge {
@@ -360,17 +399,17 @@ function renderTasksConsole(): string {
       font-size: 12px;
       font-weight: 500;
     }
-    .badge-queued { background: #fef3c7; color: #92400e; }
-    .badge-in_progress { background: #dbeafe; color: #1e40af; }
-    .badge-awaiting_approval { background: #fed7aa; color: #9a3412; }
-    .badge-completed { background: #dcfce7; color: #166534; }
-    .badge-failed { background: #fee2e2; color: #991b1b; }
+    .badge-queued { background: rgba(255, 179, 71, 0.14); color: var(--ec-amber); }
+    .badge-in_progress { background: rgba(244, 129, 32, 0.14); color: var(--ec-orange); }
+    .badge-awaiting_approval { background: rgba(255, 201, 120, 0.14); color: var(--ec-focus); }
+    .badge-completed { background: rgba(72, 187, 120, 0.14); color: #7ee0a3; }
+    .badge-failed { background: rgba(239, 68, 68, 0.14); color: #fda4af; }
     
     .section-title {
       font-weight: 600;
       margin-top: 16px;
       margin-bottom: 8px;
-      color: #1a1a1a;
+      color: var(--ec-text);
       font-size: 13px;
       text-transform: uppercase;
       letter-spacing: 0.05em;
@@ -379,24 +418,24 @@ function renderTasksConsole(): string {
     .worklog-entry {
       padding: 8px;
       margin-bottom: 8px;
-      background: #f9f9f9;
-      border-left: 3px solid #ddd;
+      background: var(--ec-surface-2);
+      border-left: 3px solid var(--ec-border);
       border-radius: 2px;
       font-size: 13px;
     }
-    .worklog-action { font-weight: 500; color: #2563eb; }
-    .worklog-time { color: #999; font-size: 12px; }
+    .worklog-action { font-weight: 500; color: var(--ec-amber); }
+    .worklog-time { color: var(--ec-text-muted); font-size: 12px; }
     
     .action-buttons {
       display: flex;
       gap: 8px;
       margin-top: 20px;
       padding-top: 20px;
-      border-top: 1px solid #e0e0e0;
+      border-top: 1px solid var(--ec-border);
     }
     button {
       padding: 10px 16px;
-      border: none;
+      border: 1px solid transparent;
       border-radius: 6px;
       cursor: pointer;
       font-size: 14px;
@@ -405,29 +444,32 @@ function renderTasksConsole(): string {
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn-approve {
-      background: #10b981;
-      color: white;
+      background: rgba(72, 187, 120, 0.16);
+      border-color: rgba(72, 187, 120, 0.3);
+      color: #7ee0a3;
     }
     .btn-approve:hover:not(:disabled) { opacity: 0.9; }
     .btn-reject {
-      background: #ef4444;
-      color: white;
+      background: rgba(239, 68, 68, 0.14);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #fda4af;
     }
     .btn-reject:hover:not(:disabled) { opacity: 0.9; }
     .btn-run {
-      background: #2563eb;
-      color: white;
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
+      color: var(--ec-bg);
     }
     .btn-run:hover:not(:disabled) { opacity: 0.9; }
-    .status-msg { margin-top: 12px; padding: 8px; border-radius: 4px; font-size: 13px; }
-    .status-msg.success { background: #dcfce7; color: #166534; }
-    .status-msg.error { background: #fee2e2; color: #991b1b; }
+    .status-msg { margin-top: 12px; padding: 8px; border-radius: 4px; font-size: 13px; border: 1px solid var(--ec-border); }
+    .status-msg.success { background: rgba(72, 187, 120, 0.14); color: #7ee0a3; }
+    .status-msg.error { background: rgba(239, 68, 68, 0.14); color: #fda4af; }
     
-    .list-loading { padding: 16px; color: #999; text-align: center; }
+    .list-loading { padding: 16px; color: var(--ec-text-muted); text-align: center; }
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/">EdgeClaw</a> / Tasks</div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Tasks</span></div>
   <div class="container">
     <header>
       <h1>Tasks Console</h1>
@@ -488,7 +530,7 @@ function renderTasksConsole(): string {
 
     async function loadTaskDetail(taskId) {
       try {
-        detailEl.innerHTML = '<p style="color: #999;">Loading...</p>';
+        detailEl.innerHTML = '<p style="color: var(--ec-text-muted);">Loading...</p>';
         const res = await fetch('/api/tasks/' + taskId);
         if (!res.ok) throw new Error('Task not found');
         const data = await res.json();
@@ -668,27 +710,64 @@ function renderSystemPage(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>System Status</title>
   <style>
+    :root {
+      --ec-bg: #0B0F14;
+      --ec-surface: #111827;
+      --ec-surface-2: #1A2230;
+      --ec-text: #F5F7FA;
+      --ec-text-muted: #B6C0CC;
+      --ec-border: #2A3442;
+      --ec-orange: #F48120;
+      --ec-amber: #FFB347;
+      --ec-focus: #FFC978;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: "Space Grotesk", "Sora", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--ec-bg);
+      color: var(--ec-text);
       font-size: 14px;
     }
     .top-strip {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 10px 20px;
+      background: var(--ec-surface);
+      border-bottom: 1px solid var(--ec-border);
+      padding: 12px 20px;
       font-size: 13px;
-      color: #666;
+      color: var(--ec-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
     .top-strip a {
-      color: #2563eb;
+      color: var(--ec-text);
       text-decoration: none;
       font-weight: 600;
     }
     .top-strip a:hover { text-decoration: underline; }
+    .ec-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--ec-text);
+    }
+    .ec-logo-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: linear-gradient(135deg, var(--ec-orange), var(--ec-amber));
+      box-shadow: 0 0 0 1px rgba(244, 129, 32, 0.2);
+      flex: 0 0 auto;
+    }
+    .ec-logo-text {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .breadcrumb {
+      color: var(--ec-text-muted);
+    }
     .container {
       max-width: 1000px;
       margin: 0 auto;
@@ -697,19 +776,20 @@ function renderSystemPage(): string {
     header {
       margin-bottom: 24px;
       padding-bottom: 16px;
-      border-bottom: 2px solid #e0e0e0;
+      border-bottom: 1px solid var(--ec-border);
     }
-    h1 { margin: 0; font-size: 24px; }
-    .subtitle { color: #666; margin: 4px 0 0; }
+    h1 { margin: 0; font-size: 28px; }
+    .subtitle { color: var(--ec-text-muted); margin: 6px 0 0; }
     
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 20px; }
     @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
     
     .panel {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-      padding: 16px;
+      border: 1px solid var(--ec-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      padding: 18px;
     }
     
     .status-row {
@@ -718,9 +798,9 @@ function renderSystemPage(): string {
       gap: 12px;
       margin-bottom: 12px;
       padding-bottom: 12px;
-      border-bottom: 1px solid #f0f0f0;
+      border-bottom: 1px solid var(--ec-border);
     }
-    .status-label { font-weight: 600; color: #666; }
+    .status-label { font-weight: 600; color: var(--ec-text-muted); }
     .status-value { display: flex; align-items: center; gap: 8px; }
     
     .badge {
@@ -730,47 +810,47 @@ function renderSystemPage(): string {
       font-size: 12px;
       font-weight: 500;
     }
-    .badge-healthy { background: #dcfce7; color: #166534; }
-    .badge-warning { background: #fef3c7; color: #92400e; }
-    .badge-error { background: #fee2e2; color: #991b1b; }
-    .badge-unknown { background: #f3f4f6; color: #4b5563; }
+    .badge-healthy { background: rgba(72, 187, 120, 0.14); color: #7ee0a3; }
+    .badge-warning { background: rgba(255, 179, 71, 0.14); color: var(--ec-amber); }
+    .badge-error { background: rgba(239, 68, 68, 0.14); color: #fda4af; }
+    .badge-unknown { background: rgba(182, 192, 204, 0.12); color: var(--ec-text-muted); }
     
     .check-item {
       padding: 8px;
       margin: 4px 0;
-      background: #f9f9f9;
-      border-left: 3px solid #e0e0e0;
+      background: var(--ec-surface-2);
+      border-left: 3px solid var(--ec-border);
       border-radius: 2px;
       font-size: 13px;
     }
-    .check-item.pass { border-left-color: #10b981; background: #f0fdf4; }
-    .check-item.fail { border-left-color: #ef4444; background: #fef2f2; }
+    .check-item.pass { border-left-color: #7ee0a3; background: rgba(72, 187, 120, 0.1); }
+    .check-item.fail { border-left-color: #fda4af; background: rgba(239, 68, 68, 0.1); }
     
     .task-summary {
       padding: 8px;
       margin: 4px 0;
-      background: #f9f9f9;
+      background: var(--ec-surface-2);
       border-radius: 4px;
       font-size: 13px;
     }
     
-    .status-loading { color: #999; font-style: italic; }
-    .status-error { color: #d32f2f; font-weight: 500; }
-    .status-ok { color: #2e7d32; font-weight: 500; }
+    .status-loading { color: var(--ec-text-muted); font-style: italic; }
+    .status-error { color: #fda4af; font-weight: 500; }
+    .status-ok { color: #7ee0a3; font-weight: 500; }
     
     .full-width { grid-column: 1 / -1; }
     
     h2 {
       margin: 0 0 12px;
-      font-size: 16px;
-      color: #1a1a1a;
-      border-bottom: 1px solid #e0e0e0;
+      font-size: 18px;
+      color: var(--ec-text);
+      border-bottom: 1px solid var(--ec-border);
       padding-bottom: 8px;
     }
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/">EdgeClaw</a> / System</div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ System</span></div>
   <div class="container">
     <header>
       <h1>System Status</h1>
@@ -961,19 +1041,30 @@ function renderAppShell(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>EdgeClaw</title>
   <style>
+    :root {
+      --ec-bg: #0B0F14;
+      --ec-surface: #111827;
+      --ec-surface-2: #1A2230;
+      --ec-text: #F5F7FA;
+      --ec-text-muted: #B6C0CC;
+      --ec-border: #2A3442;
+      --ec-orange: #F48120;
+      --ec-amber: #FFB347;
+      --ec-focus: #FFC978;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: "Space Grotesk", "Sora", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--ec-bg);
+      color: var(--ec-text);
     }
 
     .navbar {
-      background: white;
-      border-bottom: 2px solid #e0e0e0;
+      background: var(--ec-surface);
+      border-bottom: 1px solid var(--ec-border);
       padding: 16px 24px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       position: sticky;
       top: 0;
       z-index: 100;
@@ -987,12 +1078,28 @@ function renderAppShell(): string {
       gap: 32px;
     }
 
-    .navbar-brand {
-      font-size: 18px;
-      font-weight: 700;
-      color: #2563eb;
+    .ec-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
       text-decoration: none;
+      color: var(--ec-text);
       margin: 0;
+    }
+
+    .ec-logo-mark {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      background: linear-gradient(135deg, var(--ec-orange), var(--ec-amber));
+      box-shadow: 0 0 0 1px rgba(244, 129, 32, 0.2);
+      flex: 0 0 auto;
+    }
+
+    .ec-logo-text {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
     }
 
     .navbar-nav {
@@ -1006,7 +1113,7 @@ function renderAppShell(): string {
 
     .navbar-nav a {
       text-decoration: none;
-      color: #666;
+      color: var(--ec-text-muted);
       font-weight: 500;
       font-size: 14px;
       padding: 8px 0;
@@ -1015,13 +1122,13 @@ function renderAppShell(): string {
     }
 
     .navbar-nav a:hover {
-      color: #2563eb;
-      border-bottom-color: #2563eb;
+      color: var(--ec-text);
+      border-bottom-color: var(--ec-orange);
     }
 
     .navbar-nav a.active {
-      color: #2563eb;
-      border-bottom-color: #2563eb;
+      color: var(--ec-amber);
+      border-bottom-color: var(--ec-orange);
     }
 
     .container {
@@ -1031,22 +1138,23 @@ function renderAppShell(): string {
     }
 
     .hero {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
       padding: 48px 24px;
       text-align: center;
       margin-bottom: 32px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      border: 1px solid var(--ec-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
     }
 
     .hero h1 {
       margin: 0 0 12px;
-      font-size: 32px;
+      font-size: 36px;
     }
 
     .hero p {
       margin: 0 0 24px;
-      color: #666;
+      color: var(--ec-text-muted);
       font-size: 16px;
     }
 
@@ -1065,16 +1173,16 @@ function renderAppShell(): string {
     }
 
     .status-card {
-      background: white;
+      background: var(--ec-surface-2);
       border-radius: 8px;
-      border: 1px solid #e0e0e0;
+      border: 1px solid var(--ec-border);
       padding: 12px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.2);
     }
 
     .status-card-title {
       font-size: 12px;
-      color: #666;
+      color: var(--ec-text-muted);
       margin-bottom: 6px;
       text-transform: uppercase;
       letter-spacing: 0.03em;
@@ -1083,7 +1191,7 @@ function renderAppShell(): string {
 
     .status-card-value {
       font-size: 14px;
-      color: #1a1a1a;
+      color: var(--ec-text);
       font-weight: 600;
     }
 
@@ -1092,20 +1200,20 @@ function renderAppShell(): string {
     .status-error { color: #991b1b; }
 
     .nav-card {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
-      padding: 24px;
+      padding: 26px;
       text-decoration: none;
-      color: inherit;
-      border: 1px solid #e0e0e0;
+      color: var(--ec-text);
+      border: 1px solid var(--ec-border);
       transition: all 0.2s;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       text-align: center;
     }
 
     .nav-card:hover {
-      border-color: #2563eb;
-      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+      border-color: var(--ec-orange);
+      box-shadow: 0 10px 28px rgba(244, 129, 32, 0.12);
       transform: translateY(-2px);
     }
 
@@ -1117,18 +1225,18 @@ function renderAppShell(): string {
     .nav-card-title {
       font-weight: 600;
       margin-bottom: 8px;
-      font-size: 16px;
+      font-size: 18px;
     }
 
     .nav-card-desc {
       font-size: 13px;
-      color: #999;
+      color: var(--ec-text-muted);
     }
 
     footer {
       text-align: center;
       padding: 32px 24px;
-      color: #999;
+      color: var(--ec-text-muted);
       font-size: 13px;
     }
 
@@ -1153,7 +1261,7 @@ function renderAppShell(): string {
 <body>
   <nav class="navbar">
     <div class="navbar-content">
-      <h1 class="navbar-brand">EdgeClaw</h1>
+      <a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a>
       <ul class="navbar-nav" id="navbar-nav">
         <li><a href="/chat" data-route="/chat">Chat</a></li>
         <li><a href="/tasks-console" data-route="/tasks-console">Tasks</a></li>
@@ -1294,26 +1402,63 @@ function renderConfigPage(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>EdgeClaw Config</title>
   <style>
+    :root {
+      --ec-bg: #0B0F14;
+      --ec-surface: #111827;
+      --ec-surface-2: #1A2230;
+      --ec-text: #F5F7FA;
+      --ec-text-muted: #B6C0CC;
+      --ec-border: #2A3442;
+      --ec-orange: #F48120;
+      --ec-amber: #FFB347;
+      --ec-focus: #FFC978;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: "Space Grotesk", "Sora", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--ec-bg);
+      color: var(--ec-text);
     }
     .top-strip {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 10px 20px;
+      background: var(--ec-surface);
+      border-bottom: 1px solid var(--ec-border);
+      padding: 12px 20px;
       font-size: 13px;
-      color: #666;
+      color: var(--ec-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
     .top-strip a {
-      color: #2563eb;
+      color: var(--ec-text);
       text-decoration: none;
       font-weight: 600;
     }
     .top-strip a:hover { text-decoration: underline; }
+    .ec-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--ec-text);
+    }
+    .ec-logo-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: linear-gradient(135deg, var(--ec-orange), var(--ec-amber));
+      box-shadow: 0 0 0 1px rgba(244, 129, 32, 0.2);
+      flex: 0 0 auto;
+    }
+    .ec-logo-text {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .breadcrumb {
+      color: var(--ec-text-muted);
+    }
     .page {
       max-width: 1280px;
       margin: 0 auto;
@@ -1326,10 +1471,10 @@ function renderConfigPage(): string {
       gap: 16px;
       margin-bottom: 20px;
       padding-bottom: 12px;
-      border-bottom: 2px solid #e0e0e0;
+      border-bottom: 1px solid var(--ec-border);
     }
-    h1 { margin: 0; font-size: 24px; }
-    .subtitle { color: #666; margin: 4px 0 0; font-size: 13px; }
+    h1 { margin: 0; font-size: 28px; }
+    .subtitle { color: var(--ec-text-muted); margin: 6px 0 0; font-size: 13px; }
     .toolbar {
       display: flex;
       gap: 8px;
@@ -1337,37 +1482,39 @@ function renderConfigPage(): string {
     }
     button, .link-btn {
       padding: 10px 14px;
-      border: 1px solid #d0d0d0;
-      background: white;
+      border: 1px solid var(--ec-border);
+      background: var(--ec-surface-2);
       border-radius: 6px;
       font: inherit;
       cursor: pointer;
       text-decoration: none;
-      color: inherit;
+      color: var(--ec-text);
     }
     button.primary {
-      background: #2563eb;
-      border-color: #2563eb;
-      color: white;
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
+      color: var(--ec-bg);
     }
     .status {
       margin-bottom: 16px;
       padding: 10px 12px;
       border-radius: 6px;
-      background: #eef2ff;
-      color: #1e3a8a;
+      background: rgba(244, 129, 32, 0.12);
+      color: var(--ec-amber);
       font-size: 13px;
+      border: 1px solid rgba(244, 129, 32, 0.18);
     }
     .status.error {
-      background: #fef2f2;
-      color: #991b1b;
+      background: rgba(239, 68, 68, 0.12);
+      color: #fda4af;
+      border-color: rgba(239, 68, 68, 0.2);
     }
     .tabs {
       display: flex;
       gap: 0;
       margin-bottom: 16px;
-      border-bottom: 2px solid #e5e7eb;
-      background: white;
+      border-bottom: 1px solid var(--ec-border);
+      background: var(--ec-surface);
       border-radius: 8px 8px 0 0;
       overflow: hidden;
     }
@@ -1375,23 +1522,23 @@ function renderConfigPage(): string {
       flex: 1;
       padding: 12px 16px;
       border: none;
-      background: #f9fafb;
-      border-bottom: 3px solid #f9fafb;
+      background: var(--ec-surface);
+      border-bottom: 3px solid transparent;
       cursor: pointer;
       font-size: 13px;
       font-weight: 500;
-      color: #666;
+      color: var(--ec-text-muted);
       transition: all 0.2s;
       text-align: center;
       white-space: nowrap;
     }
     .tab-btn.active {
-      background: white;
-      color: #2563eb;
-      border-bottom-color: #2563eb;
+      background: var(--ec-surface-2);
+      color: var(--ec-amber);
+      border-bottom-color: var(--ec-orange);
     }
     .tab-btn:hover {
-      background: white;
+      background: var(--ec-surface-2);
     }
     .tab-content {
       display: none;
@@ -1415,18 +1562,18 @@ function renderConfigPage(): string {
       align-items: start;
     }
     .panel {
-      background: white;
-      border: 1px solid #e5e7eb;
+      background: var(--ec-surface);
+      border: 1px solid var(--ec-border);
       border-radius: 8px;
-      padding: 16px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+      padding: 18px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
     }
     .panel h2, .panel h3 {
       margin: 0 0 12px;
-      font-size: 16px;
+      font-size: 18px;
     }
     .panel h3 {
-      font-size: 14px;
+      font-size: 15px;
       margin-top: 16px;
     }
     .grid {
@@ -1443,7 +1590,7 @@ function renderConfigPage(): string {
     }
     label {
       font-size: 12px;
-      color: #555;
+      color: var(--ec-text-muted);
       font-weight: 600;
       text-transform: uppercase;
       letter-spacing: 0.03em;
@@ -1454,10 +1601,11 @@ function renderConfigPage(): string {
     select {
       width: 100%;
       padding: 9px 10px;
-      border: 1px solid #d1d5db;
+      border: 1px solid var(--ec-border);
       border-radius: 6px;
       font: inherit;
-      background: white;
+      background: var(--ec-surface-2);
+      color: var(--ec-text);
     }
     textarea {
       min-height: 96px;
@@ -1483,11 +1631,11 @@ function renderConfigPage(): string {
     .route-card,
     .channel-card,
     .route-class-card {
-      border: 1px solid #e5e7eb;
+      border: 1px solid var(--ec-border);
       border-radius: 8px;
       padding: 12px;
       margin-bottom: 10px;
-      background: #fafafa;
+      background: var(--ec-surface-2);
     }
     .route-class-card {
       display: grid;
@@ -1500,9 +1648,9 @@ function renderConfigPage(): string {
       margin-bottom: 16px;
       padding: 12px 14px;
       border-radius: 6px;
-      background: #fefce8;
-      border: 1px solid #fde047;
-      color: #854d0e;
+      background: rgba(255, 179, 71, 0.12);
+      border: 1px solid rgba(255, 179, 71, 0.2);
+      color: var(--ec-amber);
       font-size: 13px;
       line-height: 1.5;
     }
@@ -1513,7 +1661,7 @@ function renderConfigPage(): string {
     .hint {
       margin-top: 8px;
       font-size: 12px;
-      color: #666;
+      color: var(--ec-text-muted);
     }
     .route-assignments {
       display: grid;
@@ -1525,9 +1673,9 @@ function renderConfigPage(): string {
       gap: 12px;
       align-items: center;
       padding: 10px;
-      background: white;
+      background: var(--ec-surface-2);
       border-radius: 6px;
-      border: 1px solid #f0f0f0;
+      border: 1px solid var(--ec-border);
     }
     .route-assignment label {
       margin: 0;
@@ -1555,7 +1703,7 @@ function renderConfigPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/">EdgeClaw</a> / Config</div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Config</span></div>
   <div class="page">
     <header>
       <div>
@@ -1666,7 +1814,7 @@ function renderConfigPage(): string {
           <div id="route-classes-panel"></div>
 
           <h3>Route Assignments</h3>
-          <p style="margin: 0 0 12px; font-size: 13px; color: #666;">Assign specific route classes to different agents and operations. Runtime currently enforces <strong>Analyst Agent</strong> assignment; other entries are metadata-only until their runtime call sites are wired.</p>
+          <p style="margin: 0 0 12px; font-size: 13px; color: var(--ec-text-muted);">Assign specific route classes to different agents and operations. Runtime currently enforces <strong>Analyst Agent</strong> assignment; other entries are metadata-only until their runtime call sites are wired.</p>
           <div class="route-assignments" id="route-assignments-panel"></div>
         </section>
       </div>
@@ -2101,12 +2249,12 @@ function renderConfigPage(): string {
       
       mcpServersPanelEl.innerHTML = '<div style="margin-top: 12px;">' +
         (serverNames.length === 0 
-          ? '<p style="font-size: 13px; color: #666; margin: 0;">No MCP servers configured. Add servers by editing the raw JSON or extend this UI.</p>'
+          ? '<p style="font-size: 13px; color: var(--ec-text-muted); margin: 0;">No MCP servers configured. Add servers by editing the raw JSON or extend this UI.</p>'
           : serverNames.map(name => {
               const server = servers[name] || {};
               return '<div class="route-card">' +
                 '<label style="margin: 0; font-weight: 600; text-transform: none;">' + escapeHtml(name) + '</label>' +
-                '<p style="margin: 4px 0 0; font-size: 12px; color: #666;">' + (server.description || 'No description') + '</p>' +
+                '<p style="margin: 4px 0 0; font-size: 12px; color: var(--ec-text-muted);">' + (server.description || 'No description') + '</p>' +
               '</div>';
             }).join('')
         ) +

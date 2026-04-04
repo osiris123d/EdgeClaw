@@ -172,26 +172,63 @@ export function renderChatPage(): string {
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>EdgeClaw Chat</title>
   <style>
+    :root {
+      --ec-bg: #0B0F14;
+      --ec-surface: #111827;
+      --ec-surface-2: #1A2230;
+      --ec-text: #F5F7FA;
+      --ec-text-muted: #B6C0CC;
+      --ec-border: #2A3442;
+      --ec-orange: #F48120;
+      --ec-amber: #FFB347;
+      --ec-focus: #FFC978;
+    }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: #f5f5f5;
-      color: #1a1a1a;
+      font-family: "Space Grotesk", "Sora", Inter, ui-sans-serif, system-ui, sans-serif;
+      background: var(--ec-bg);
+      color: var(--ec-text);
     }
     .top-strip {
-      background: white;
-      border-bottom: 1px solid #e0e0e0;
-      padding: 10px 20px;
+      background: var(--ec-surface);
+      border-bottom: 1px solid var(--ec-border);
+      padding: 12px 20px;
       font-size: 13px;
-      color: #666;
+      color: var(--ec-text-muted);
+      display: flex;
+      align-items: center;
+      gap: 14px;
     }
     .top-strip a {
-      color: #2563eb;
+      color: var(--ec-text);
       text-decoration: none;
       font-weight: 600;
     }
     .top-strip a:hover { text-decoration: underline; }
+    .ec-logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      color: var(--ec-text);
+    }
+    .ec-logo-mark {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: linear-gradient(135deg, var(--ec-orange), var(--ec-amber));
+      box-shadow: 0 0 0 1px rgba(244, 129, 32, 0.2);
+      flex: 0 0 auto;
+    }
+    .ec-logo-text {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+    .breadcrumb {
+      color: var(--ec-text-muted);
+    }
     .container {
       max-width: 900px;
       margin: 0 auto;
@@ -203,36 +240,38 @@ export function renderChatPage(): string {
       align-items: center;
       margin-bottom: 24px;
       padding-bottom: 16px;
-      border-bottom: 2px solid #e0e0e0;
+      border-bottom: 1px solid var(--ec-border);
     }
     h1 {
       margin: 0;
-      font-size: 24px;
+      font-size: 28px;
     }
     .subtitle {
       margin-top: 6px;
       font-size: 13px;
-      color: #666;
+      color: var(--ec-text-muted);
     }
     .session-info {
       font-size: 12px;
-      color: #666;
+      color: var(--ec-text-muted);
     }
     .new-chat-btn {
       padding: 8px 16px;
-      background: white;
-      border: 1px solid #ddd;
+      background: var(--ec-surface-2);
+      color: var(--ec-text);
+      border: 1px solid var(--ec-border);
       border-radius: 6px;
       cursor: pointer;
       font-size: 13px;
     }
     .new-chat-btn:hover {
-      background: #f9f9f9;
+      background: rgba(255,255,255,0.04);
     }
     .chat-panel {
-      background: white;
+      background: var(--ec-surface);
       border-radius: 8px;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      border: 1px solid var(--ec-border);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       display: flex;
       flex-direction: column;
       height: 600px;
@@ -261,61 +300,60 @@ export function renderChatPage(): string {
       white-space: pre-wrap;
     }
     .message.user .message-bubble {
-      background: #2563eb;
-      color: white;
+      background: var(--ec-orange);
+      color: var(--ec-bg);
     }
     .message.assistant .message-bubble {
-      background: #f0f0f0;
-      color: #1a1a1a;
+      background: var(--ec-surface-2);
+      color: var(--ec-text);
     }
     .message-meta {
       font-size: 11px;
-      color: #999;
+      color: var(--ec-text-muted);
       padding: 0 4px;
     }
     .task-card {
       max-width: 75%;
       padding: 12px 16px;
-      border-left: 4px solid #10b981;
-      background: #f0fdf4;
+      border-left: 4px solid #7ee0a3;
+      background: rgba(72, 187, 120, 0.12);
       border-radius: 4px;
       font-size: 13px;
     }
     .task-card strong {
-      color: #059669;
+      color: #7ee0a3;
     }
     .proposal-card, .result-card {
       max-width: 85%;
       padding: 12px 14px;
       border-radius: 8px;
-      border: 1px solid #d1d5db;
-      background: #f8fafc;
+      border: 1px solid var(--ec-border);
+      background: var(--ec-surface-2);
       font-size: 13px;
     }
     .proposal-card {
-      border-left: 4px solid #2563eb;
-      background: #eff6ff;
+      border-left: 4px solid var(--ec-orange);
     }
     .result-card {
-      border-left: 4px solid #10b981;
-      background: #ecfdf5;
+      border-left: 4px solid #7ee0a3;
+      background: rgba(72, 187, 120, 0.08);
     }
     .approval-card {
       max-width: 85%;
       padding: 12px 14px;
       border-radius: 8px;
-      border: 1px solid #fbbf24;
-      border-left: 4px solid #f59e0b;
-      background: #fffbeb;
+      border: 1px solid rgba(255, 179, 71, 0.2);
+      border-left: 4px solid var(--ec-amber);
+      background: rgba(255, 179, 71, 0.1);
       font-size: 13px;
     }
     .assistant-text-card {
       max-width: 75%;
       padding: 12px 16px;
       border-radius: 8px;
-      border-left: 4px solid #64748b;
-      background: #f8fafc;
-      color: #1a1a1a;
+      border-left: 4px solid var(--ec-orange);
+      background: var(--ec-surface-2);
+      color: var(--ec-text);
       line-height: 1.5;
       white-space: pre-wrap;
       word-wrap: break-word;
@@ -331,11 +369,11 @@ export function renderChatPage(): string {
       margin-bottom: 10px;
     }
     .card-label {
-      color: #475569;
+      color: var(--ec-text-muted);
       font-weight: 600;
     }
     .card-value {
-      color: #0f172a;
+      color: var(--ec-text);
     }
     .proposal-actions {
       display: flex;
@@ -346,18 +384,19 @@ export function renderChatPage(): string {
     .btn-small {
       padding: 6px 10px;
       border-radius: 6px;
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
+      border: 1px solid var(--ec-border);
+      background: var(--ec-surface);
+      color: var(--ec-text);
       font-size: 12px;
       cursor: pointer;
     }
-    .btn-small:hover { background: #f8fafc; }
+    .btn-small:hover { background: rgba(255,255,255,0.04); }
     .btn-small.primary {
-      background: #2563eb;
-      color: white;
-      border-color: #2563eb;
+      background: var(--ec-orange);
+      color: var(--ec-bg);
+      border-color: var(--ec-orange);
     }
-    .btn-small.primary:hover { background: #1d4ed8; }
+    .btn-small.primary:hover { background: var(--ec-amber); }
     .proposal-edit {
       margin-top: 8px;
       display: none;
@@ -366,29 +405,30 @@ export function renderChatPage(): string {
     }
     .proposal-edit label {
       font-size: 12px;
-      color: #475569;
+      color: var(--ec-text-muted);
       font-weight: 600;
     }
     .proposal-edit input, .proposal-edit select {
       width: 100%;
       padding: 8px 10px;
-      border: 1px solid #cbd5e1;
+      border: 1px solid var(--ec-border);
       border-radius: 6px;
       font-size: 12px;
       font-family: inherit;
-      background: white;
+      background: var(--ec-surface);
+      color: var(--ec-text);
     }
     .progress-line {
       max-width: 85%;
       font-size: 12px;
-      color: #475569;
-      background: #f8fafc;
-      border: 1px dashed #cbd5e1;
+      color: var(--ec-text-muted);
+      background: var(--ec-surface-2);
+      border: 1px dashed var(--ec-border);
       padding: 8px 10px;
       border-radius: 6px;
     }
     .details-link {
-      color: #1d4ed8;
+      color: var(--ec-amber);
       text-decoration: none;
       font-weight: 600;
     }
@@ -396,67 +436,72 @@ export function renderChatPage(): string {
     .open-details-btn {
       padding: 6px 10px;
       border-radius: 6px;
-      border: 1px solid #93c5fd;
-      background: #eff6ff;
-      color: #1d4ed8;
+      border: 1px solid rgba(255, 179, 71, 0.2);
+      background: rgba(255, 179, 71, 0.12);
+      color: var(--ec-amber);
       cursor: pointer;
       font-size: 12px;
       font-weight: 600;
     }
     .open-details-btn:hover {
-      background: #dbeafe;
+      background: rgba(255, 179, 71, 0.18);
     }
     .input-area {
       padding: 16px;
-      border-top: 1px solid #e0e0e0;
+      border-top: 1px solid var(--ec-border);
       display: flex;
       gap: 8px;
     }
     input {
       flex: 1;
       padding: 10px 14px;
-      border: 1px solid #ddd;
+      border: 1px solid var(--ec-border);
       border-radius: 6px;
       font-size: 14px;
       font-family: inherit;
+      background: var(--ec-surface-2);
+      color: var(--ec-text);
     }
     input:focus {
       outline: none;
-      border-color: #2563eb;
+      border-color: var(--ec-focus);
+      box-shadow: 0 0 0 2px rgba(255, 201, 120, 0.14);
     }
     button[type="submit"] {
       padding: 10px 20px;
-      background: #2563eb;
-      color: white;
-      border: none;
+      background: var(--ec-orange);
+      color: var(--ec-bg);
+      border: 1px solid var(--ec-orange);
       border-radius: 6px;
       cursor: pointer;
       font-size: 14px;
       font-weight: 500;
     }
     button[type="submit"]:hover {
-      background: #1d4ed8;
+      background: var(--ec-amber);
     }
     button[type="submit"]:disabled {
-      background: #cbd5e1;
+      background: var(--ec-border);
+      border-color: var(--ec-border);
+      color: var(--ec-text-muted);
       cursor: not-allowed;
     }
     .status {
       padding: 12px 16px;
       font-size: 13px;
-      color: #666;
-      border-top: 1px solid #e0e0e0;
-      background: #fafafa;
+      color: var(--ec-text-muted);
+      border-top: 1px solid var(--ec-border);
+      background: var(--ec-surface-2);
     }
     .status.error {
-      color: #dc2626;
+      color: #fda4af;
     }
     .spinner {
       display: inline-block;
       width: 12px;
       height: 12px;
-      border: 2px solid #e0e0e0;
-      border-top-color: #2563eb;
+      border: 2px solid var(--ec-border);
+      border-top-color: var(--ec-orange);
       border-radius: 50%;
       animation: spin 0.6s linear infinite;
     }
@@ -466,7 +511,7 @@ export function renderChatPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/">EdgeClaw</a> / Chat</div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Chat</span></div>
   <div class="container">
     <header>
       <div>
@@ -490,7 +535,7 @@ export function renderChatPage(): string {
       </div>
     </div>
 
-    <div style="margin-top: 16px; font-size: 12px; color: #999;">
+    <div style="margin-top: 16px; font-size: 12px; color: var(--ec-text-muted);">
       Session: <span id="session-label">Loading...</span>
     </div>
   </div>
