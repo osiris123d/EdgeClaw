@@ -301,13 +301,16 @@ function renderTasksConsole(): string {
     .top-strip {
       background: var(--ec-surface);
       border-bottom: 1px solid var(--ec-border);
-      padding: 12px 20px;
+      padding: 16px 24px;
       font-size: 13px;
       color: var(--ec-text-muted);
+    }
+    .top-strip-inner {
+      max-width: 1200px;
+      margin: 0 auto;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      gap: 32px;
       flex-wrap: wrap;
     }
     .top-strip a {
@@ -343,6 +346,7 @@ function renderTasksConsole(): string {
       display: inline-flex;
       gap: 8px;
       flex-wrap: wrap;
+      flex: 1;
     }
     .top-nav a {
       padding: 7px 10px;
@@ -512,7 +516,7 @@ function renderTasksConsole(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console" class="active">Tasks</a><a href="/config-ui">Config</a><a href="/system">System</a></nav></div>
+  <div class="top-strip"><div class="top-strip-inner"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console" class="active">Tasks</a><a href="/config-ui">Config</a><a href="/system">System</a></nav></div></div>
   <div class="container">
     <header>
       <h1>Tasks Console</h1>
@@ -775,13 +779,16 @@ function renderSystemPage(): string {
     .top-strip {
       background: var(--ec-surface);
       border-bottom: 1px solid var(--ec-border);
-      padding: 12px 20px;
+      padding: 16px 24px;
       font-size: 13px;
       color: var(--ec-text-muted);
+    }
+    .top-strip-inner {
+      max-width: 1200px;
+      margin: 0 auto;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      gap: 32px;
       flex-wrap: wrap;
     }
     .top-strip a {
@@ -817,6 +824,7 @@ function renderSystemPage(): string {
       display: inline-flex;
       gap: 8px;
       flex-wrap: wrap;
+      flex: 1;
     }
     .top-nav a {
       padding: 7px 10px;
@@ -950,7 +958,7 @@ function renderSystemPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui">Config</a><a href="/system" class="active">System</a></nav></div>
+  <div class="top-strip"><div class="top-strip-inner"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui">Config</a><a href="/system" class="active">System</a></nav></div></div>
   <div class="container">
     <header>
       <h1>System Status</h1>
@@ -1539,13 +1547,16 @@ function renderConfigPage(): string {
     .top-strip {
       background: var(--ec-surface);
       border-bottom: 1px solid var(--ec-border);
-      padding: 12px 20px;
+      padding: 16px 24px;
       font-size: 13px;
       color: var(--ec-text-muted);
+    }
+    .top-strip-inner {
+      max-width: 1200px;
+      margin: 0 auto;
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      gap: 14px;
+      gap: 32px;
       flex-wrap: wrap;
     }
     .top-strip a {
@@ -1581,6 +1592,7 @@ function renderConfigPage(): string {
       display: inline-flex;
       gap: 8px;
       flex-wrap: wrap;
+      flex: 1;
     }
     .top-nav a {
       padding: 7px 10px;
@@ -1930,7 +1942,7 @@ function renderConfigPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui" class="active">Config</a><a href="/system">System</a></nav></div>
+  <div class="top-strip"><div class="top-strip-inner"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui" class="active">Config</a><a href="/system">System</a></nav></div></div>
   <div class="page">
     <header>
       <div>
