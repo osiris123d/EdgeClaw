@@ -306,7 +306,9 @@ function renderTasksConsole(): string {
       color: var(--ec-text-muted);
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 14px;
+      flex-wrap: wrap;
     }
     .top-strip a {
       color: var(--ec-text);
@@ -337,6 +339,31 @@ function renderTasksConsole(): string {
     .breadcrumb {
       color: var(--ec-text-muted);
     }
+    .top-nav {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .top-nav a {
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--ec-text-muted);
+      text-decoration: none;
+      background: transparent;
+      transition: all 0.18s ease;
+    }
+    .top-nav a:hover {
+      color: var(--ec-text);
+      border-color: var(--ec-orange);
+      background: rgba(244, 129, 32, 0.08);
+      text-decoration: none;
+    }
+    .top-nav a.active {
+      color: var(--ec-bg);
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
+    }
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -359,6 +386,12 @@ function renderTasksConsole(): string {
       box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       max-height: 600px;
       overflow-y: auto;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .task-list:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
     }
     .task-item {
       padding: 12px 16px;
@@ -378,6 +411,12 @@ function renderTasksConsole(): string {
       box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       padding: 22px;
       min-height: 600px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .task-detail:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.4);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
     }
     .detail-empty { color: var(--ec-text-muted); font-style: italic; }
     
@@ -440,9 +479,13 @@ function renderTasksConsole(): string {
       cursor: pointer;
       font-size: 14px;
       font-weight: 500;
-      transition: opacity 0.15s;
+      transition: opacity 0.15s, transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
     }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.2);
+    }
     .btn-approve {
       background: rgba(72, 187, 120, 0.16);
       border-color: rgba(72, 187, 120, 0.3);
@@ -469,7 +512,7 @@ function renderTasksConsole(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Tasks</span></div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console" class="active">Tasks</a><a href="/config-ui">Config</a><a href="/system">System</a></nav></div>
   <div class="container">
     <header>
       <h1>Tasks Console</h1>
@@ -737,7 +780,9 @@ function renderSystemPage(): string {
       color: var(--ec-text-muted);
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 14px;
+      flex-wrap: wrap;
     }
     .top-strip a {
       color: var(--ec-text);
@@ -768,6 +813,31 @@ function renderSystemPage(): string {
     .breadcrumb {
       color: var(--ec-text-muted);
     }
+    .top-nav {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .top-nav a {
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--ec-text-muted);
+      text-decoration: none;
+      background: transparent;
+      transition: all 0.18s ease;
+    }
+    .top-nav a:hover {
+      color: var(--ec-text);
+      border-color: var(--ec-orange);
+      background: rgba(244, 129, 32, 0.08);
+      text-decoration: none;
+    }
+    .top-nav a.active {
+      color: var(--ec-bg);
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
+    }
     .container {
       max-width: 1000px;
       margin: 0 auto;
@@ -790,6 +860,12 @@ function renderSystemPage(): string {
       border: 1px solid var(--ec-border);
       box-shadow: 0 8px 24px rgba(0,0,0,0.25);
       padding: 18px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .panel:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.4);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
     }
     
     .status-row {
@@ -837,6 +913,30 @@ function renderSystemPage(): string {
     .status-loading { color: var(--ec-text-muted); font-style: italic; }
     .status-error { color: #fda4af; font-weight: 500; }
     .status-ok { color: #7ee0a3; font-weight: 500; }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      font-weight: 600;
+      line-height: 1.2;
+    }
+    .status-pill.ok {
+      background: rgba(72, 187, 120, 0.14);
+      border-color: rgba(72, 187, 120, 0.25);
+      color: #7ee0a3;
+    }
+    .status-pill.warn {
+      background: rgba(255, 179, 71, 0.14);
+      border-color: rgba(255, 179, 71, 0.22);
+      color: var(--ec-amber);
+    }
+    .status-pill.error {
+      background: rgba(239, 68, 68, 0.14);
+      border-color: rgba(239, 68, 68, 0.22);
+      color: #fda4af;
+    }
     
     .full-width { grid-column: 1 / -1; }
     
@@ -850,7 +950,7 @@ function renderSystemPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ System</span></div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui">Config</a><a href="/system" class="active">System</a></nav></div>
   <div class="container">
     <header>
       <h1>System Status</h1>
@@ -917,15 +1017,15 @@ function renderSystemPage(): string {
       try {
         const res = await fetch('/health');
         if (res.ok) {
-          healthEl.innerHTML = '<span class="badge badge-healthy">✓ Healthy</span>';
+          healthEl.innerHTML = '<span class="badge badge-healthy status-pill ok">✓ Healthy</span>';
           return true;
         } else {
-          healthEl.innerHTML = '<span class="badge badge-error">✗ Unhealthy</span>';
+          healthEl.innerHTML = '<span class="badge badge-error status-pill error">✗ Unhealthy</span>';
           errors.push('Health check returned non-2xx status');
           return false;
         }
       } catch (err) {
-        healthEl.innerHTML = '<span class="badge badge-error">✗ Error</span>';
+        healthEl.innerHTML = '<span class="badge badge-error status-pill error">✗ Error</span>';
         errors.push('Failed to reach /health: ' + (err.message || 'Unknown'));
         return false;
       }
@@ -958,7 +1058,7 @@ function renderSystemPage(): string {
             errors.push('Readiness: ' + err);
           }
         }
-        readyEl.innerHTML = html || '<span class="status-ok">All checks passed</span>';
+        readyEl.innerHTML = html || '<span class="status-pill ok">All checks passed</span>';
       } catch (err) {
         readyEl.innerHTML = '<span class="status-error">Failed to check readiness</span>';
         errors.push('Readiness check error: ' + (err.message || 'Unknown'));
@@ -1116,19 +1216,22 @@ function renderAppShell(): string {
       color: var(--ec-text-muted);
       font-weight: 500;
       font-size: 14px;
-      padding: 8px 0;
-      border-bottom: 2px solid transparent;
+      padding: 8px 12px;
+      border: 1px solid transparent;
+      border-radius: 999px;
       transition: all 0.2s;
     }
 
     .navbar-nav a:hover {
       color: var(--ec-text);
-      border-bottom-color: var(--ec-orange);
+      border-color: var(--ec-orange);
+      background: rgba(244, 129, 32, 0.08);
     }
 
     .navbar-nav a.active {
-      color: var(--ec-amber);
-      border-bottom-color: var(--ec-orange);
+      color: var(--ec-bg);
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
     }
 
     .container {
@@ -1178,6 +1281,12 @@ function renderAppShell(): string {
       border: 1px solid var(--ec-border);
       padding: 12px;
       box-shadow: 0 6px 18px rgba(0,0,0,0.2);
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .status-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.42);
+      box-shadow: 0 10px 24px rgba(0,0,0,0.28);
     }
 
     .status-card-title {
@@ -1190,14 +1299,20 @@ function renderAppShell(): string {
     }
 
     .status-card-value {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
       font-size: 14px;
       color: var(--ec-text);
       font-weight: 600;
     }
 
-    .status-ok { color: #166534; }
-    .status-warn { color: #92400e; }
-    .status-error { color: #991b1b; }
+    .status-ok { color: #7ee0a3; background: rgba(72, 187, 120, 0.14); border-color: rgba(72, 187, 120, 0.25); }
+    .status-warn { color: var(--ec-amber); background: rgba(255, 179, 71, 0.14); border-color: rgba(255, 179, 71, 0.22); }
+    .status-error { color: #fda4af; background: rgba(239, 68, 68, 0.14); border-color: rgba(239, 68, 68, 0.22); }
 
     .nav-card {
       background: var(--ec-surface);
@@ -1263,6 +1378,7 @@ function renderAppShell(): string {
     <div class="navbar-content">
       <a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a>
       <ul class="navbar-nav" id="navbar-nav">
+        <li><a href="/" data-route="/">Home</a></li>
         <li><a href="/chat" data-route="/chat">Chat</a></li>
         <li><a href="/tasks-console" data-route="/tasks-console">Tasks</a></li>
         <li><a href="/config-ui" data-route="/config-ui">Config</a></li>
@@ -1428,7 +1544,9 @@ function renderConfigPage(): string {
       color: var(--ec-text-muted);
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 14px;
+      flex-wrap: wrap;
     }
     .top-strip a {
       color: var(--ec-text);
@@ -1458,6 +1576,31 @@ function renderConfigPage(): string {
     }
     .breadcrumb {
       color: var(--ec-text-muted);
+    }
+    .top-nav {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .top-nav a {
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--ec-text-muted);
+      text-decoration: none;
+      background: transparent;
+      transition: all 0.18s ease;
+    }
+    .top-nav a:hover {
+      color: var(--ec-text);
+      border-color: var(--ec-orange);
+      background: rgba(244, 129, 32, 0.08);
+      text-decoration: none;
+    }
+    .top-nav a.active {
+      color: var(--ec-bg);
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
     }
     .page {
       max-width: 1280px;
@@ -1489,11 +1632,21 @@ function renderConfigPage(): string {
       cursor: pointer;
       text-decoration: none;
       color: var(--ec-text);
+      transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+    }
+    button:hover, .link-btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.22);
     }
     button.primary {
       background: var(--ec-orange);
       border-color: var(--ec-orange);
       color: var(--ec-bg);
+    }
+    button.primary:hover {
+      background: var(--ec-amber);
+      border-color: var(--ec-amber);
     }
     .status {
       margin-bottom: 16px;
@@ -1567,6 +1720,12 @@ function renderConfigPage(): string {
       border-radius: 8px;
       padding: 18px;
       box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .panel:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.4);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
     }
     .panel h2, .panel h3 {
       margin: 0 0 12px;
@@ -1633,16 +1792,84 @@ function renderConfigPage(): string {
     .route-class-card {
       border: 1px solid var(--ec-border);
       border-radius: 8px;
-      padding: 12px;
+      padding: 14px;
       margin-bottom: 10px;
       background: var(--ec-surface-2);
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .agent-card:hover,
+    .route-card:hover,
+    .channel-card:hover,
+    .route-class-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 10px 22px rgba(0,0,0,0.22);
     }
     .route-class-card {
       display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 12px;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 14px;
       align-items: center;
-      padding: 12px;
+      padding: 16px;
+      position: relative;
+      overflow: hidden;
+    }
+    .route-class-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 4px;
+      background: linear-gradient(180deg, var(--ec-orange), var(--ec-amber));
+      opacity: 0.9;
+    }
+    .route-class-meta {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .route-class-title-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .route-class-name {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--ec-text);
+      text-transform: none;
+      letter-spacing: 0.01em;
+      margin: 0;
+    }
+    .route-class-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.08);
+      background: rgba(255,255,255,0.04);
+      color: var(--ec-text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .route-class-hint {
+      color: var(--ec-text-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .route-class-input-wrap {
+      display: grid;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .route-class-input-label {
+      font-size: 11px;
+      color: var(--ec-text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      font-weight: 600;
     }
     .warning {
       margin-bottom: 16px;
@@ -1703,7 +1930,7 @@ function renderConfigPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Config</span></div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui" class="active">Config</a><a href="/system">System</a></nav></div>
   <div class="page">
     <header>
       <div>
@@ -2194,13 +2421,26 @@ function renderConfigPage(): string {
     function renderRouteClasses() {
       const routeClasses = configState.aiGateway.routeClasses || {};
       const classNames = ['utility', 'tools', 'reasoning', 'vision'];
+      const routeHints = {
+        utility: 'Balanced default route for general assistant work and low-latency responses.',
+        tools: 'Tool-using route for actions, retrieval, and structured task execution.',
+        reasoning: 'Higher-deliberation route for analysis-heavy workflows and complex tasks.',
+        vision: 'Multimodal route reserved for image or visual-context use cases.'
+      };
       routeClassesPanelEl.innerHTML = classNames.map((className) => {
         const cfg = routeClasses[className] || { enabled: false, route: className };
         return '<div class="route-class-card">' +
           '<input type="checkbox" data-route-class-toggle="' + className + '" ' + (cfg.enabled ? 'checked' : '') + ' />' +
-          '<div style="display: flex; flex-direction: column; gap: 8px; flex: 1;">' +
-          '  <label style="margin: 0; text-transform: none; font-weight: 600;">' + className + '</label>' +
-          '  <input type="text" placeholder="Route name" data-route-class-name="' + className + '" value="' + escapeHtml(cfg.route || '') + '" style="font-size: 12px;" />' +
+          '<div class="route-class-meta">' +
+          '  <div class="route-class-title-row">' +
+          '    <div class="route-class-name">' + className + '</div>' +
+          '    <span class="route-class-badge">' + (cfg.enabled ? 'Enabled' : 'Disabled') + '</span>' +
+          '  </div>' +
+          '  <div class="route-class-hint">' + escapeHtml(routeHints[className] || '') + '</div>' +
+          '  <div class="route-class-input-wrap">' +
+          '    <label class="route-class-input-label">Gateway Route Name</label>' +
+          '    <input type="text" placeholder="Route name" data-route-class-name="' + className + '" value="' + escapeHtml(cfg.route || '') + '" style="font-size: 12px;" />' +
+          '  </div>' +
           '</div>' +
         '</div>';
       }).join('');

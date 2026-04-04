@@ -198,7 +198,9 @@ export function renderChatPage(): string {
       color: var(--ec-text-muted);
       display: flex;
       align-items: center;
+      justify-content: space-between;
       gap: 14px;
+      flex-wrap: wrap;
     }
     .top-strip a {
       color: var(--ec-text);
@@ -228,6 +230,31 @@ export function renderChatPage(): string {
     }
     .breadcrumb {
       color: var(--ec-text-muted);
+    }
+    .top-nav {
+      display: inline-flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .top-nav a {
+      padding: 7px 10px;
+      border-radius: 999px;
+      border: 1px solid transparent;
+      color: var(--ec-text-muted);
+      text-decoration: none;
+      background: transparent;
+      transition: all 0.18s ease;
+    }
+    .top-nav a:hover {
+      color: var(--ec-text);
+      border-color: var(--ec-orange);
+      background: rgba(244, 129, 32, 0.08);
+      text-decoration: none;
+    }
+    .top-nav a.active {
+      color: var(--ec-bg);
+      background: var(--ec-orange);
+      border-color: var(--ec-orange);
     }
     .container {
       max-width: 900px;
@@ -263,9 +290,13 @@ export function renderChatPage(): string {
       border-radius: 6px;
       cursor: pointer;
       font-size: 13px;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
     }
     .new-chat-btn:hover {
       background: rgba(255,255,255,0.04);
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.22);
     }
     .chat-panel {
       background: var(--ec-surface);
@@ -275,6 +306,12 @@ export function renderChatPage(): string {
       display: flex;
       flex-direction: column;
       height: 600px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .chat-panel:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.4);
+      box-shadow: 0 12px 30px rgba(0,0,0,0.3);
     }
     .messages {
       flex: 1;
@@ -330,6 +367,12 @@ export function renderChatPage(): string {
       border: 1px solid var(--ec-border);
       background: var(--ec-surface-2);
       font-size: 13px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    }
+    .proposal-card:hover, .result-card:hover, .approval-card:hover, .assistant-text-card:hover, .task-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 10px 22px rgba(0,0,0,0.22);
     }
     .proposal-card {
       border-left: 4px solid var(--ec-orange);
@@ -346,6 +389,7 @@ export function renderChatPage(): string {
       border-left: 4px solid var(--ec-amber);
       background: rgba(255, 179, 71, 0.1);
       font-size: 13px;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     }
     .assistant-text-card {
       max-width: 75%;
@@ -357,6 +401,7 @@ export function renderChatPage(): string {
       line-height: 1.5;
       white-space: pre-wrap;
       word-wrap: break-word;
+      transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
     }
     .card-title {
       font-weight: 700;
@@ -389,8 +434,14 @@ export function renderChatPage(): string {
       color: var(--ec-text);
       font-size: 12px;
       cursor: pointer;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
     }
-    .btn-small:hover { background: rgba(255,255,255,0.04); }
+    .btn-small:hover {
+      background: rgba(255,255,255,0.04);
+      transform: translateY(-1px);
+      border-color: rgba(244, 129, 32, 0.45);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.18);
+    }
     .btn-small.primary {
       background: var(--ec-orange);
       color: var(--ec-bg);
@@ -476,9 +527,13 @@ export function renderChatPage(): string {
       cursor: pointer;
       font-size: 14px;
       font-weight: 500;
+      transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
     }
     button[type="submit"]:hover {
       background: var(--ec-amber);
+      border-color: var(--ec-amber);
+      transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(0,0,0,0.22);
     }
     button[type="submit"]:disabled {
       background: var(--ec-border);
@@ -511,7 +566,7 @@ export function renderChatPage(): string {
   </style>
 </head>
 <body>
-  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><span class="breadcrumb">/ Chat</span></div>
+  <div class="top-strip"><a href="/" class="ec-logo"><span class="ec-logo-mark"></span><span class="ec-logo-text">EdgeClaw</span></a><nav class="top-nav" aria-label="Primary"><a href="/">Home</a><a href="/chat" class="active">Chat</a><a href="/tasks-console">Tasks</a><a href="/config-ui">Config</a><a href="/system">System</a></nav></div>
   <div class="container">
     <header>
       <div>
