@@ -24,16 +24,29 @@ npx wrangler r2 bucket create agent-worklogs-prod
 
 ```
 
+## Authentication Model
+
+Three distinct credentials are used in a production deployment. Do not confuse them.
+
+| Credential | Secret name | Purpose | Who uses it |
+|---|---|---|---|
+| **EdgeClaw API key** | `API_KEY` | Authenticates inbound machine/API requests to the Worker (`/tasks`, `/config`, etc.) | CI systems, automation, machine clients |
+| **AI Gateway token** | `AI_GATEWAY_TOKEN` | Authenticates EdgeClaw's outbound calls to Cloudflare AI Gateway | Worker only (server-side, never sent by end users) |
+| **Cloudflare Access** | Managed in CF dashboard | Protects browser UI routes at the edge before the Worker runs | Browser users (zero-trust SSO) |
+
 ## Secrets Setup
 
 Set production secrets (do not commit to repo):
 
 ```powershell
+# EdgeClaw API key — used by machine clients for inbound API requests
 npx wrangler secret put API_KEY --env production
+
+# AI Gateway token — used by the Worker for outbound AI calls (not for inbound auth)
 npx wrangler secret put AI_GATEWAY_TOKEN --env production
 ```
 
-Optional fallback key name (supported by app):
+Optional fallback key name (supported by app as an alias for `API_KEY`):
 
 ```powershell
 npx wrangler secret put MVP_API_KEY --env production

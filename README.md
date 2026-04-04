@@ -35,12 +35,13 @@ curl.exe -s -X POST "http://127.0.0.1:8787/tasks" `
   -d '{"userId":"demo-user","input":{"objective":"Audit NAC policy change impact","payload":{"incidentId":"INC-1001"}}}'
 ```
 
-3. Run task execution:
+3. Run task execution (browser-facing route — requires an active Cloudflare Access session; use the browser UI or a valid Access JWT):
 
 ```powershell
+# POST /tasks/run-next is a browser-facing route.
+# In local dev (no Access enforced), omit the API key:
 curl.exe -s -X POST "http://127.0.0.1:8787/tasks/run-next" `
   -H "Content-Type: application/json" `
-  -H "x-api-key: your-key" `
   -d '{"taskId":"<TASK_ID_FROM_STEP_2>"}'
 ```
 
@@ -73,17 +74,22 @@ curl.exe -s "http://127.0.0.1:8787/tasks/<TASK_ID_FROM_STEP_2>" `
 
 | Method | Route | Auth | Purpose |
 |---|---|---|---|
-| `GET` | `/health` | No | Fast health probe (`{ ok: true, checks }`) |
-| `GET` | `/chat` | No | Minimal web chat UI |
-| `POST` | `/api/chat/sessions` | Yes | Create chat session |
-| `GET` | `/api/chat/sessions/:sessionId/messages` | Yes | Fetch chat history |
-| `POST` | `/api/chat/sessions/:sessionId/messages` | Yes | Stream assistant reply (SSE) |
-| `POST` | `/tasks` | Yes | Create task packet |
-| `POST` | `/tasks/run-next` | Yes | Execute task workflow |
-| `GET` | `/tasks/:taskId` | Yes | Get task + worklog + optional final outputs |
-| `GET` | `/tasks/:taskId/approval` | Yes | Get approval status/card payload |
-| `POST` | `/tasks/:taskId/approve` | Yes | Approve paused task |
-| `POST` | `/tasks/:taskId/reject` | Yes | Reject paused task |
+| `GET` | `/health` | None | Fast health probe (`{ ok: true, checks }`) |
+| `GET` | `/` | Cloudflare Access | App shell (browser) |
+| `GET` | `/chat` | Cloudflare Access | Chat UI (browser) |
+| `GET` | `/tasks-console` | Cloudflare Access | Task console (browser) |
+| `GET` | `/config-ui` | Cloudflare Access | Config editor (browser) |
+| `POST` | `/tasks/run-next` | Cloudflare Access | Trigger next task (browser-only) |
+| `POST` | `/api/chat/sessions` | Cloudflare Access | Create chat session |
+| `GET` | `/api/chat/sessions/:sessionId/messages` | Cloudflare Access | Fetch chat history |
+| `POST` | `/api/chat/sessions/:sessionId/messages` | Cloudflare Access | Stream assistant reply (SSE) |
+| `POST` | `/tasks` | EdgeClaw API key | Create task packet (machine lane) |
+| `GET` | `/tasks/:taskId` | EdgeClaw API key | Get task + worklog + outputs |
+| `GET` | `/tasks/:taskId/approval` | EdgeClaw API key | Get approval status |
+| `POST` | `/tasks/:taskId/approve` | EdgeClaw API key | Approve paused task |
+| `POST` | `/tasks/:taskId/reject` | EdgeClaw API key | Reject paused task |
+| `GET` | `/config` | EdgeClaw API key | Read current config |
+| `POST` | `/config/validate` | EdgeClaw API key | Validate config payload |
 
 Notes:
 - Error shape is consistent for failures: `{ ok: false, error: string }`
@@ -152,14 +158,18 @@ The chat interface now supports:
 
 ## 🔐 Authentication Model
 
-EdgeClaw uses a dual-mode authentication model:
+EdgeClaw uses three distinct authentication mechanisms. They do not overlap.
 
-- Browser UI (Chat, Task Console, System) → authenticated via Cloudflare Access
-- API routes (/tasks, automation) → authenticated via API key
+| Credential | Name in secrets | Used by | Protects |
+|---|---|---|---|
+| **EdgeClaw API key** | `API_KEY` (or `MVP_API_KEY`) | Machine clients, CI, automation | `/tasks`, `/config`, `/tasks/:id`, machine API routes. Pass as `x-api-key: <key>` header. |
+| **Cloudflare Access** | Managed by Cloudflare dashboard | Browser users | All browser UI routes: `/`, `/chat`, `/tasks-console`, `/config-ui`, `/tasks/run-next`, chat sessions. Enforced at the Cloudflare edge before the Worker runs. |
+| **AI Gateway token** | `AI_GATEWAY_TOKEN` | EdgeClaw Worker (outbound only) | Authenticates EdgeClaw's outbound calls to Cloudflare AI Gateway for AI-assisted analysis. Never sent by end users. |
 
-This allows:
-- secure browser UX without exposing API keys
-- continued support for automation and scripting
+Key rules:
+- `POST /tasks/run-next` is browser-only. The EdgeClaw API key cannot access it.
+- Browser sessions receive a `CF_Authorization` cookie from Cloudflare Access. Workers read the `Cf-Access-Jwt-Assertion` header to verify identity.
+- `AI_GATEWAY_TOKEN` is only used server-side for outbound AI calls. It is not used to authenticate inbound requests.
 
 
 ## 🤖 AI Gateway Integration

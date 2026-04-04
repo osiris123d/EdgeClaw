@@ -42,11 +42,11 @@ Create a `.env.local` file in the root:
 ```env
 ENVIRONMENT=development
 LOG_LEVEL=debug
-AI_GATEWAY_ACCOUNT_ID=your_account_id
-AI_GATEWAY_AUTH_TOKEN=your_api_token
-AI_GATEWAY_SMALL_MODEL_ROUTE=small-model-route
-AI_GATEWAY_LARGE_MODEL_ROUTE=large-model-route
+API_KEY=your-edgeclaw-api-key
+AI_GATEWAY_TOKEN=your-ai-gateway-token
 ```
+
+> **Auth note:** `API_KEY` authenticates inbound machine requests to the Worker (used in `x-api-key` header). `AI_GATEWAY_TOKEN` is used by the Worker for outbound AI calls — it is not an inbound auth credential and should never be sent by API clients.
 
 ### 4. Build
 
@@ -197,7 +197,8 @@ This streams live logs from your deployed worker.
 
 ### AI Gateway Returns 403
 
-- Verify `AI_GATEWAY_AUTH_TOKEN` is valid
+- Verify `AI_GATEWAY_TOKEN` is set as a Worker secret (not an inbound auth token — this is only for EdgeClaw's outbound AI calls)
+- Confirm the AI Gateway route/base URL in config is correct
 - Check token has permission for the routes you created
 - Confirm account ID matches in requests
 
