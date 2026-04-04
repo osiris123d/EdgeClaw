@@ -287,6 +287,19 @@ function renderTasksConsole(): string {
       color: #1a1a1a;
       font-size: 14px;
     }
+    .top-strip {
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 10px 20px;
+      font-size: 13px;
+      color: #666;
+    }
+    .top-strip a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .top-strip a:hover { text-decoration: underline; }
     .container {
       max-width: 1200px;
       margin: 0 auto;
@@ -414,6 +427,7 @@ function renderTasksConsole(): string {
   </style>
 </head>
 <body>
+  <div class="top-strip"><a href="/">EdgeClaw</a> / Tasks</div>
   <div class="container">
     <header>
       <h1>Tasks Console</h1>
@@ -662,6 +676,19 @@ function renderSystemPage(): string {
       color: #1a1a1a;
       font-size: 14px;
     }
+    .top-strip {
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 10px 20px;
+      font-size: 13px;
+      color: #666;
+    }
+    .top-strip a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .top-strip a:hover { text-decoration: underline; }
     .container {
       max-width: 1000px;
       margin: 0 auto;
@@ -743,6 +770,7 @@ function renderSystemPage(): string {
   </style>
 </head>
 <body>
+  <div class="top-strip"><a href="/">EdgeClaw</a> / System</div>
   <div class="container">
     <header>
       <h1>System Status</h1>
@@ -861,7 +889,12 @@ function renderSystemPage(): string {
       try {
         const res = await fetch('/api/tasks');
         if (!res.ok) {
-          taskEl.innerHTML = '<span class="status-loading">No task data available</span>';
+          if (res.status === 401 || res.status === 403) {
+            taskEl.innerHTML = '<span class="status-error">Task data unavailable (HTTP ' + res.status + '). This route is machine-auth protected.</span>';
+          } else {
+            taskEl.innerHTML = '<span class="status-error">Task data unavailable (HTTP ' + res.status + ').</span>';
+          }
+          errors.push('Task activity fetch failed (HTTP ' + res.status + ').');
           return;
         }
         const data = await res.json();
@@ -887,7 +920,8 @@ function renderSystemPage(): string {
 
         taskEl.innerHTML = html;
       } catch (err) {
-        taskEl.innerHTML = '<span class="status-loading">Unable to load task activity</span>';
+        taskEl.innerHTML = '<span class="status-error">Task data unavailable due to network or server error.</span>';
+        errors.push('Task activity fetch error: ' + (err.message || 'Unknown'));
       }
     }
 
@@ -1023,6 +1057,40 @@ function renderAppShell(): string {
       margin-top: 24px;
     }
 
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+
+    .status-card {
+      background: white;
+      border-radius: 8px;
+      border: 1px solid #e0e0e0;
+      padding: 12px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    }
+
+    .status-card-title {
+      font-size: 12px;
+      color: #666;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      font-weight: 600;
+    }
+
+    .status-card-value {
+      font-size: 14px;
+      color: #1a1a1a;
+      font-weight: 600;
+    }
+
+    .status-ok { color: #166534; }
+    .status-warn { color: #92400e; }
+    .status-error { color: #991b1b; }
+
     .nav-card {
       background: white;
       border-radius: 8px;
@@ -1099,6 +1167,21 @@ function renderAppShell(): string {
     <div class="hero">
       <h1>Welcome to EdgeClaw</h1>
       <p>Enterprise network operations automation and analysis</p>
+
+      <div class="status-grid">
+        <div class="status-card">
+          <div class="status-card-title">Health</div>
+          <div class="status-card-value" id="home-health">Loading...</div>
+        </div>
+        <div class="status-card">
+          <div class="status-card-title">Ready</div>
+          <div class="status-card-value" id="home-ready">Loading...</div>
+        </div>
+        <div class="status-card">
+          <div class="status-card-title">Recent Task Activity</div>
+          <div class="status-card-value" id="home-tasks">Loading...</div>
+        </div>
+      </div>
     </div>
 
     <div class="nav-grid">
@@ -1148,6 +1231,56 @@ function renderAppShell(): string {
 
     updateActiveLink();
     window.addEventListener('hashchange', updateActiveLink);
+
+    async function loadHomeStatus() {
+      const healthEl = document.getElementById('home-health');
+      const readyEl = document.getElementById('home-ready');
+      const tasksEl = document.getElementById('home-tasks');
+
+      try {
+        const res = await fetch('/health');
+        healthEl.textContent = res.ok ? 'Healthy' : 'Unhealthy (HTTP ' + res.status + ')';
+        healthEl.className = 'status-card-value ' + (res.ok ? 'status-ok' : 'status-error');
+      } catch (_) {
+        healthEl.textContent = 'Unavailable';
+        healthEl.className = 'status-card-value status-error';
+      }
+
+      try {
+        const res = await fetch('/ready');
+        if (res.status === 503) {
+          readyEl.textContent = 'Degraded (503)';
+          readyEl.className = 'status-card-value status-warn';
+        } else if (res.ok) {
+          readyEl.textContent = 'Ready';
+          readyEl.className = 'status-card-value status-ok';
+        } else {
+          readyEl.textContent = 'Unavailable (HTTP ' + res.status + ')';
+          readyEl.className = 'status-card-value status-error';
+        }
+      } catch (_) {
+        readyEl.textContent = 'Unavailable';
+        readyEl.className = 'status-card-value status-error';
+      }
+
+      try {
+        const res = await fetch('/api/tasks');
+        if (!res.ok) {
+          tasksEl.textContent = 'Unavailable (HTTP ' + res.status + ')';
+          tasksEl.className = 'status-card-value status-warn';
+          return;
+        }
+        const data = await res.json();
+        const count = Number(data.count || 0);
+        tasksEl.textContent = count + ' tasks visible';
+        tasksEl.className = 'status-card-value status-ok';
+      } catch (_) {
+        tasksEl.textContent = 'Unavailable';
+        tasksEl.className = 'status-card-value status-warn';
+      }
+    }
+
+    loadHomeStatus();
   </script>
 </body>
 </html>`;
@@ -1168,6 +1301,19 @@ function renderConfigPage(): string {
       background: #f5f5f5;
       color: #1a1a1a;
     }
+    .top-strip {
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 10px 20px;
+      font-size: 13px;
+      color: #666;
+    }
+    .top-strip a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .top-strip a:hover { text-decoration: underline; }
     .page {
       max-width: 1280px;
       margin: 0 auto;
@@ -1409,6 +1555,7 @@ function renderConfigPage(): string {
   </style>
 </head>
 <body>
+  <div class="top-strip"><a href="/">EdgeClaw</a> / Config</div>
   <div class="page">
     <header>
       <div>
@@ -2108,15 +2255,29 @@ function renderConfigPage(): string {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
         });
-        const data = await res.json();
+        let data = null;
+        try {
+          data = await res.json();
+        } catch (_) {
+          data = null;
+        }
         if (!res.ok) {
-          throw new Error((data.errors || []).join('; ') || data.error || 'Save failed');
+          const validationMessage = (data && Array.isArray(data.errors) && data.errors.length > 0)
+            ? data.errors.join('; ')
+            : (data && typeof data.error === 'string' ? data.error : '');
+
+          if (res.status === 400 || (validationMessage && /validation|invalid|required|schema/i.test(validationMessage))) {
+            setStatus('Validation failed: ' + (validationMessage || 'Invalid configuration payload.'), true);
+          } else {
+            setStatus('Save failed: server error (HTTP ' + res.status + ').', true);
+          }
+          return;
         }
         configState = data.config || payload;
         renderForm();
         setStatus('Config saved as version ' + (data.version || configState.metadata.version) + '.');
       } catch (err) {
-        setStatus('Save failed: ' + (err.message || 'Unknown error'), true);
+        setStatus('Save failed: network error. ' + (err.message || 'Unknown error'), true);
       }
     }
 

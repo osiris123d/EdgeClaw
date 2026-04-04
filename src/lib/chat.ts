@@ -170,7 +170,7 @@ export function renderChatPage(): string {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>CloudflareBot Operator Chat</title>
+  <title>EdgeClaw Chat</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -179,6 +179,19 @@ export function renderChatPage(): string {
       background: #f5f5f5;
       color: #1a1a1a;
     }
+    .top-strip {
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
+      padding: 10px 20px;
+      font-size: 13px;
+      color: #666;
+    }
+    .top-strip a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 600;
+    }
+    .top-strip a:hover { text-decoration: underline; }
     .container {
       max-width: 900px;
       margin: 0 auto;
@@ -452,10 +465,11 @@ export function renderChatPage(): string {
   </style>
 </head>
 <body>
+  <div class="top-strip"><a href="/">EdgeClaw</a> / Chat</div>
   <div class="container">
     <header>
       <div>
-        <h1>CloudflareBot Operator</h1>
+        <h1>EdgeClaw Chat</h1>
         <div class="subtitle">Task-aware assistant for proposals, execution, and general questions</div>
       </div>
       <button class="new-chat-btn" id="new-chat">New Chat</button>
@@ -491,10 +505,23 @@ export function renderChatPage(): string {
     let sessionId = localStorage.getItem('cloudflarebot:sessionId') || '';
     let isSending = false;
     let currentLiveAssistant = null;
+    let hadRecentError = false;
+
+    function setReadyStatus() {
+      if (hadRecentError) {
+        setStatus('Ready (recovered after previous error)');
+        hadRecentError = false;
+      } else {
+        setStatus('Ready');
+      }
+    }
 
     function setStatus(text, isError = false) {
       statusEl.innerHTML = text;
       statusEl.className = isError ? 'status error' : 'status';
+      if (isError) {
+        hadRecentError = true;
+      }
     }
 
     function escapeHtml(value) {
@@ -762,7 +789,7 @@ export function renderChatPage(): string {
         localStorage.setItem('cloudflarebot:sessionId', sessionId);
         sessionLabelEl.textContent = sessionId.slice(0, 12) + '...';
         messagesEl.innerHTML = '';
-        setStatus('Ready');
+        setReadyStatus();
       } catch (err) {
         setStatus('Error: ' + (err.message || 'Failed to create session'), true);
       }
@@ -776,7 +803,7 @@ export function renderChatPage(): string {
         for (const msg of (data.messages || [])) {
           renderSavedMessage(msg);
         }
-        setStatus('Ready');
+        setReadyStatus();
       } catch (err) {
         setStatus('Error loading messages: ' + (err.message || 'Unknown'), true);
       }
@@ -861,7 +888,7 @@ export function renderChatPage(): string {
           }
         }
 
-        setStatus('Ready');
+        setReadyStatus();
       } catch (err) {
         setStatus('Error: ' + (err.message || 'Failed to send message'), true);
       } finally {
