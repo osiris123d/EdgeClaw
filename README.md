@@ -31,6 +31,7 @@ A production-grade AI agent platform built on **Cloudflare Workers** and **Durab
 - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
 - [Sub-agents (Coder, Tester, coordinator)](#sub-agents-coder-tester-coordinator)
 - [Getting Started](#getting-started)
+  - [First-time deployment checklist](#first-time-deployment-checklist-must-haves-vs-optional)
 - [Project Structure](#project-structure)
 
 ---
@@ -689,6 +690,8 @@ Definitions can use trigger modes such as **manual**, **scheduled**, or **event*
 
 ## Getting Started
 
+**New deployers:** read **[First-time deployment checklist](#first-time-deployment-checklist-must-haves-vs-optional)** (must-have `wrangler` vars, bindings, and secrets/API tokens) before your first `wrangler deploy`.
+
 ### Prerequisites
 
 - [Node.js](https://nodejs.org) 18+
@@ -732,6 +735,52 @@ The committed **`wrangler.jsonc`** is an **account-agnostic template** (`YOUR_*`
 1. Copy it to **`wrangler.local.jsonc`** (that filename is **gitignored**), replace placeholders with your **account ID**, **AI Gateway** `/compat` base URL, **R2** bucket names, and uncomment or add **`kv_namespaces`** after `wrangler kv namespace create …` / `wrangler kv namespace list`.
 2. Deploy with **`npx wrangler deploy --config wrangler.local.jsonc`** (and `wrangler dev --config wrangler.local.jsonc` for local runs). Keep the default **`wrangler.jsonc`** as the shared “production template” for forks; use **`--config`** for staging or personal wiring without leaking IDs into Git.
 3. Put real tokens in **Wrangler secrets** (`wrangler secret put …`) or **`.dev.vars`** for local dev — not in JSON.
+
+### First-time deployment checklist (must-haves vs optional)
+
+Use this when bringing up **your own** Cloudflare account. Anything marked **required** will block a working agent or cause startup errors; the rest unlocks specific features.
+
+#### Cloudflare account & Wrangler
+
+- **Required:** A Cloudflare account with **Workers** and **Durable Objects** enabled (the default template binds **`MAIN_AGENT`** and related DOs; migrations ship with the repo).
+- **Required:** Install [Wrangler](https://developers.cloudflare.com/workers/wrangler/) and run **`wrangler login`** once so deploys and `secret put` target the right account.
+- **Required for this template’s bindings:** **Workers AI** (`ai` binding), **Browser Rendering / Browser Run** (`browser` binding), **R2** (two buckets), **static assets** (`./frontend/dist`), **Worker Loaders** (`worker_loaders`). These are declared in **`wrangler.jsonc`** — Wrangler will fail the deploy if your account cannot satisfy a binding (e.g. missing product access).
+- **Workflows:** The repo registers **four** workflow classes. Your account needs the **Workflows** product if you rely on the Workflows UI/API; otherwise adjust bindings or expect errors only on workflow-related routes.
+- **Optional KV:** **`SHARED_WORKSPACE_KV`** and **`COORDINATOR_CONTROL_PLANE_KV`** are **not** in the committed template by default. Add **`kv_namespaces`** (with real namespace IDs) when you want shared Coder/Tester workspace persistence and the **Sub-Agents** control-plane UI (projects / tasks / runs). Without them, core chat and delegation can still work with fallbacks.
+
+#### Plain configuration (`vars` + resource names in `wrangler.jsonc` / `wrangler.local.jsonc`)
+
+These are **not** secrets — they are deployed as **plain vars** or binding metadata on every `wrangler deploy`.
+
+| Item | Required? | Notes |
+|------|-------------|--------|
+| **`CLOUDFLARE_ACCOUNT_ID`** | **Yes** | 32-character hex from the dashboard URL / account home. Used at runtime (e.g. Browser Run, gateway log proxy, optional Workers API calls). |
+| **`AI_GATEWAY_BASE_URL`** | **Yes** | Must be the OpenAI-compatible **`…/compat`** URL for your [AI Gateway](https://developers.cloudflare.com/ai-gateway/). The worker **throws at startup** if this is missing or does not end with `/compat`. |
+| **R2 bucket names** (`changeme-edgeclaw-*` in the template) | **Yes** if `ENABLE_SKILLS` / promotion paths are on | Create buckets with **`wrangler r2 bucket create …`**, then set the same names under **`r2_buckets`** and **`PROMOTION_ARTIFACTS_BUCKET_NAME`** (must match the promotion bucket). |
+| **`ENABLE_SKILLS`** + **`SKILLS_BUCKET`** | Strongly recommended | If `ENABLE_SKILLS=true` but the R2 binding is missing, session skills are disabled (warning only). Set **`ENABLE_SKILLS=false`** if you intentionally skip skills. |
+| **`ENVIRONMENT`** | No | `development` / `staging` / `production` — telemetry and behavior hints. |
+| Other `vars` (`ENABLE_MCP`, `ENABLE_BROWSER_TOOLS`, …) | No | Feature toggles; see inline comments in **`wrangler.jsonc`** and the [Browser Run](#cloudflare-browser-run-auth-and-bindings) section. |
+
+#### Secrets & API tokens (never commit — `.dev.vars` + `wrangler secret put`)
+
+**GitHub pushes do not update the Worker** and do **not** rotate Cloudflare-stored secrets. Set secrets once per Worker (or use **`npm run secrets`**, which reads **`.dev.vars`** and runs `wrangler secret put` for each non-empty line — see **`.dev.vars.example`**).
+
+| Secret / token | When you need it |
+|----------------|------------------|
+| **`OPENAI_API_KEY`** / **`ANTHROPIC_API_KEY`** | When your model traffic uses those providers (typical for LLM calls through AI Gateway, depending on provider configuration). |
+| **`AI_GATEWAY_TOKEN`** | When your AI Gateway is configured to require a bearer token on requests. |
+| **`CLOUDFLARE_API_TOKEN`** and/or **`CLOUDFLARE_BROWSER_API_TOKEN`** | **Browser Run / `browser_search` / `browser_execute`** paths need a token with Browser Rendering (and related) permissions. Prefer a dedicated **`CLOUDFLARE_BROWSER_API_TOKEN`** when you use one; otherwise a sufficiently scoped **`CLOUDFLARE_API_TOKEN`**. See [Browser Run](#cloudflare-browser-run-auth-and-bindings). |
+| **`CLOUDFLARE_API_TOKEN`** (again) | **Only** if you enable optional features that call the Workers API from the Worker (e.g. preview/production deploy **witness** or **preview Worker version upload** — see comments in **`wrangler.jsonc`** and `docs/preview-deploy-cloudflare.md`). Not required for basic chat. |
+| **`MCP_SERVER_URL`** / **`MCP_AUTH_TOKEN`** | Optional; when using remote MCP servers (`ENABLE_MCP=true`). |
+| **`DEBUG_ORCHESTRATION_TOKEN`** / **`SUBAGENT_REPRO_TOKEN`** | Optional hardening for debug/repro HTTP routes when those endpoints are left enabled. Do **not** duplicate `ENABLE_*` flags here — those stay as plain `vars`. |
+
+**Wrangler deploy vs secrets:** `wrangler deploy` applies **code + plain `vars` + bindings**. **Secrets** live separately in Cloudflare; redeploying does **not** wipe them. Do not put API keys in **`wrangler.jsonc`** — use **`.dev.vars`** locally and **`wrangler secret put`** (or **`npm run secrets`**) for deployed Workers.
+
+#### Before `wrangler deploy`
+
+1. **`cd frontend && npm run build`** so **`./frontend/dist`** exists (static **ASSETS** upload).
+2. Replace all **`__REPLACE_*`**, **`YOUR_*`**, and the **`changeme`** R2 prefix (or create buckets with those literal names for a throwaway test).
+3. **`cp .dev.vars.example .dev.vars`**, fill values, then **`npx wrangler dev`** (reads `.dev.vars`) or **`npm run secrets`** then **`npx wrangler deploy`** for production.
 
 ---
 
