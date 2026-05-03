@@ -151,7 +151,7 @@ How the agent should communicate with you. Tone, format, verbosity.
 Who you are. The agent uses this to tailor responses to your background and role.
 
 ```
-Name: Duane Larson
+Name: Your name
 Role: Architect 
 Expertise: Cloudflare, VoIP, AI/LLM integrations, Networking, Linux
 Company: EdgeClaw Systems
@@ -165,10 +165,10 @@ Experience level: Advanced — skip beginner explanations.
 Your current project, repo, or work context. Update this as your focus shifts.
 
 ```
-Current project: CF_Truth — AI agent platform on Cloudflare Workers
+Current project: EdgeClaw — AI agent platform on Cloudflare Workers
 Stack: TypeScript, Cloudflare Workers, Durable Objects, React + Vite
-Repo: c:\Users\dlarson\VSCode Environment\Agentic AI\CF_Truth
-Deployed to: edgeclaw-truth-agent.duane-larson.workers.dev
+Repo: /path/to/your/EdgeClaw clone
+Deployed to: https://edgeclaw-truth-agent.<your-subdomain>.workers.dev
 Active sprint goal: Shipping the Memory management page and browser session tools.
 ```
 
@@ -242,7 +242,7 @@ The Memory REST API base path is /api/memory — proxied from worker to DO.
 Team members, roles, and relevant contacts.
 
 ```
-Duane Larson — Lead Engineer (you)
+You — Lead Engineer
 Platform: Cloudflare Workers
 Design system: Warm neutral palette, soft borders, no external UI libraries.
 ```
@@ -342,14 +342,14 @@ All endpoints are served at `/api/memory` on the worker. Use `?session=<name>` t
 
 **Example — create or update a block:**
 ```bash
-curl -X PUT https://edgeclaw-truth-agent.duane-larson.workers.dev/api/memory/preferences \
+curl -X PUT https://edgeclaw-truth-agent.<your-subdomain>.workers.dev/api/memory/preferences \
   -H "Content-Type: application/json" \
   -d '{"content": "Always respond in bullet points."}'
 ```
 
 **Example — target a specific session:**
 ```bash
-curl "https://edgeclaw-truth-agent.duane-larson.workers.dev/api/memory?session=research-agent"
+curl "https://edgeclaw-truth-agent.<your-subdomain>.workers.dev/api/memory?session=research-agent"
 ```
 
 ---
@@ -454,7 +454,7 @@ All endpoints are served at `/api/skills`. Use `?session=<name>` to target a spe
 
 **Example — create a skill:**
 ```bash
-curl -X POST https://edgeclaw-truth-agent.duane-larson.workers.dev/api/skills \
+curl -X POST https://edgeclaw-truth-agent.<your-subdomain>.workers.dev/api/skills \
   -H "Content-Type: application/json" \
   -d '{
     "key": "code-reviewer",
