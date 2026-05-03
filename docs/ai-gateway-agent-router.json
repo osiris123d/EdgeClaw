@@ -1,0 +1,283 @@
+{
+  "name": "agent-router",
+  "elements": [
+    {
+      "id": "start",
+      "type": "start",
+      "outputs": {
+        "next": { "elementId": "is-main" }
+      }
+    },
+
+    {
+      "id": "is-main",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.agent": { "$eq": "MainAgent" }
+        }
+      },
+      "outputs": {
+        "true": { "elementId": "main-primary" },
+        "false": { "elementId": "is-coordinator" }
+      }
+    },
+
+    {
+      "id": "is-coordinator",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.agent": { "$eq": "CoordinatorAgent" }
+        }
+      },
+      "outputs": {
+        "true": { "elementId": "coordinator-primary" },
+        "false": { "elementId": "is-coder" }
+      }
+    },
+
+    {
+      "id": "is-coder",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.agent": { "$eq": "CoderAgent" }
+        }
+      },
+      "outputs": {
+        "true": { "elementId": "coder-primary" },
+        "false": { "elementId": "is-browser" }
+      }
+    },
+
+    {
+      "id": "is-browser",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.agent": { "$eq": "BrowserAgent" }
+        }
+      },
+      "outputs": {
+        "true": { "elementId": "browser-primary" },
+        "false": { "elementId": "tester-primary" }
+      }
+    },
+
+    {
+      "id": "main-primary",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/zai-org/glm-4.7-flash",
+        "timeout": 20000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "main-fallback-1" }
+      }
+    },
+    {
+      "id": "main-fallback-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 25000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "main-fallback-2" }
+      }
+    },
+    {
+      "id": "main-fallback-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/meta/llama-4-scout-17b-16e-instruct",
+        "timeout": 25000,
+        "retries": 0
+      },
+      "outputs": {
+        "success": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "coordinator-primary",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/moonshotai/kimi-k2.6",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "coordinator-fallback-1" }
+      }
+    },
+    {
+      "id": "coordinator-fallback-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/nvidia/nemotron-3-120b-a12b",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "coordinator-fallback-2" }
+      }
+    },
+    {
+      "id": "coordinator-fallback-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/openai/gpt-oss-120b",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "coder-primary",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/moonshotai/kimi-k2.6",
+        "timeout": 90000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "coder-fallback-1" }
+      }
+    },
+    {
+      "id": "coder-fallback-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/openai/gpt-oss-120b",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "coder-fallback-2" }
+      }
+    },
+    {
+      "id": "coder-fallback-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "browser-primary",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/moonshotai/kimi-k2.6",
+        "timeout": 90000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "browser-fallback-1" }
+      }
+    },
+    {
+      "id": "browser-fallback-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/openai/gpt-oss-120b",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "browser-fallback-2" }
+      }
+    },
+    {
+      "id": "browser-fallback-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "tester-primary",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 30000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "tester-fallback-1" }
+      }
+    },
+    {
+      "id": "tester-fallback-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/qwen/qwq-32b",
+        "timeout": 40000,
+        "retries": 1
+      },
+      "outputs": {
+        "success": { "elementId": "end" },
+        "fallback": { "elementId": "tester-fallback-2" }
+      }
+    },
+    {
+      "id": "tester-fallback-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "end",
+      "type": "end"
+    }
+  ]
+}

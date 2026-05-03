@@ -5,9 +5,8 @@ export type { AuraTtsSpeaker } from "./lib/auraTts";
 export type NavItem =
   | "Chat"
   | "Sub-Agents"
-  | "Dashboard"
+  | "Agent Browsing"
   | "Memory"
-  | "Kanban"
   | "Workflows"
   | "Tasks"
   | "Skills"
@@ -40,6 +39,11 @@ export interface FeatureSettings {
    * "puppeteer" — @cloudflare/puppeteer (cleaner API, experimental)
    */
   browserStepExecutor: "cdp" | "puppeteer";
+  /**
+   * Agent Browsing page only: Workers AI binding vs Cloudflare AI Gateway (`dynamic/agent-router`).
+   * Gateway path sends `cf-aig-metadata` with `agent: BrowserAgent` (see `docs/ai-gateway-agent-router.json`).
+   */
+  browsingInferenceBackend: "workers-ai" | "ai-gateway";
   /**
    * Deepgram Flux: confidence required before an utterance is considered
    * finished and sent to the agent (maps to `eotThreshold`). Range 0.5–0.9.

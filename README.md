@@ -30,6 +30,7 @@ A production-grade AI agent platform built on **Cloudflare Workers** and **Durab
 - [Workflows (definitions and runs)](#workflows-definitions-and-runs)
 - [MCP (Model Context Protocol)](#mcp-model-context-protocol)
 - [Sub-agents (Coder, Tester, coordinator)](#sub-agents-coder-tester-coordinator)
+- [Agent Browsing (dedicated Playwright UI)](#agent-browsing-dedicated-playwright-ui)
 - [Getting Started](#getting-started)
   - [First-time deployment checklist](#first-time-deployment-checklist-must-haves-vs-optional)
 - [Project Structure](#project-structure)
@@ -685,6 +686,20 @@ Definitions can use trigger modes such as **manual**, **scheduled**, or **event*
 **Sub-agents** — **CoderAgent** / **TesterAgent** facets intentionally **do not** run the full MainAgent MCP OAuth / browser / TTS restore path; orchestration uses shared workspace tools instead. See [Sub-agents](#sub-agents-coder-tester-coordinator).
 
 **UI** — Chat surfaces MCP connection status and discovery; use **`GET /api/mcp`** or the in-app MCP controls to add/remove/reconnect servers.
+
+---
+
+## Agent Browsing (dedicated Playwright UI)
+
+The **Agent Browsing** page is a **separate** Durable Object agent (**`EdgeclawBrowsingAgent`**) for heavy browser automation, ported from the MIT [agent-browsing](https://github.com/harshil1712/agent-browsing) reference: `@cloudflare/playwright`, CDP screencast frames, **Action Log**, optional **Live View** (Chrome DevTools iframe), and `ask_user` human-in-the-loop. It uses the same Worker **`BROWSER`** binding as the rest of EdgeClaw but **does not** share MainAgent chat memory or the Think WebSocket protocol.
+
+**LLM inference:** In **Settings → Browser automation → Agent Browsing — LLM inference**, choose **Workers AI** (direct **`AI`** binding, default `@cf/moonshotai/kimi-k2.5`) or **AI Gateway** (`dynamic/agent-router` with **`cf-aig-metadata`** `agent: BrowserAgent`). Gateway mode requires **`AI_GATEWAY_BASE_URL`** (…`/compat`) and **`AI_GATEWAY_TOKEN`**; align your gateway pipeline with **`docs/ai-gateway-agent-router.json`**.
+
+**WebSocket path:** `/agents/edgeclaw-browsing-agent/<session>` (the in-app session id defaults with the shell; use **New chat** / session controls if you wire a dedicated browsing session later).
+
+**Local dev:** if the Vite dev server and Wrangler use different ports, set **`VITE_BROWSING_AGENT_WS_URL`** (same idea as `VITE_AGENT_WS_URL`) to the browsing WebSocket base, e.g. `ws://127.0.0.1:8788/agents/edgeclaw-browsing-agent/default`.
+
+**Live View URL fetch** needs **`CLOUDFLARE_ACCOUNT_ID`** (plain var) plus a Browser Run–capable API token: **`CLOUDFLARE_BROWSER_API_TOKEN`**, **`CLOUDFLARE_API_TOKEN`**, or optional **`BROWSER_RENDERING_API_TOKEN`** (alias).
 
 ---
 

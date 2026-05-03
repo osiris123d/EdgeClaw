@@ -1570,6 +1570,27 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
           {!settings.enableBrowserTools && (
             <p className="muted settings-card-disabled-note">Enable browser tools above to change this setting.</p>
           )}
+
+          <label style={{ display: "block", marginTop: "14px" }}>
+            <span>Agent Browsing — LLM inference</span>
+            <select
+              value={settings.browsingInferenceBackend}
+              onChange={(e) =>
+                set(
+                  "browsingInferenceBackend",
+                  e.target.value as FeatureSettings["browsingInferenceBackend"]
+                )
+              }
+            >
+              <option value="workers-ai">Workers AI (direct binding, default)</option>
+              <option value="ai-gateway">AI Gateway (agent-router, metadata agent BrowserAgent)</option>
+            </select>
+          </label>
+          <p className="muted settings-card-desc" style={{ marginTop: "8px" }}>
+            AI Gateway mode uses <code>AI_GATEWAY_BASE_URL</code> (…/compat) and <code>AI_GATEWAY_TOKEN</code>.
+            Route <code>dynamic/agent-router</code> must include a <code>BrowserAgent</code> branch — see{" "}
+            <code>docs/ai-gateway-agent-router.json</code>.
+          </p>
         </section>
 
         {/* ── Voice ── */}

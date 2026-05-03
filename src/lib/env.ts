@@ -305,6 +305,8 @@ export interface Env
   OPENAI_API_KEY?: string;
   AI_GATEWAY_TOKEN?: string;
   CLOUDFLARE_BROWSER_API_TOKEN?: string;
+  /** Alias for Browser Run Live View API (same as CLOUDFLARE_BROWSER_API_TOKEN when set). */
+  BROWSER_RENDERING_API_TOKEN?: string;
   MCP_SERVER_URL?: string;
   MCP_AUTH_TOKEN?: string;
 }

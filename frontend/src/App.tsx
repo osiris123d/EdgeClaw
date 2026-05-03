@@ -9,13 +9,13 @@ import { TasksPage }     from "./pages/TasksPage";
 import { SkillsPage }    from "./pages/SkillsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { SubAgentsPage } from "./pages/SubAgentsPage";
+import { AgentBrowsingPage } from "./pages/AgentBrowsingPage";
 
 const NAV_ITEMS: NavItem[] = [
   "Chat",
   "Sub-Agents",
-  "Dashboard",
+  "Agent Browsing",
   "Memory",
-  "Kanban",
   "Workflows",
   "Tasks",
   "Skills",
@@ -33,6 +33,7 @@ const DEFAULT_SETTINGS: FeatureSettings = {
   voiceMode: "disabled",
   ttsSpeaker: DEFAULT_AURA_TTS_SPEAKER,
   browserStepExecutor: "cdp",
+  browsingInferenceBackend: "workers-ai",
   /** Deepgram Flux defaults — see Settings → Voice. */
   voiceFluxEotThreshold: 0.7,
   voiceFluxEotTimeoutMs: 5000,
@@ -197,13 +198,17 @@ export default function App() {
         {activeNav === "Sub-Agents" && (
           <SubAgentsPage wsEndpoint={endpoint} sessionId={sessionId} />
         )}
-        {activeNav === "Dashboard" && <PlaceholderPage title="Dashboard" />}
+        {activeNav === "Agent Browsing" && (
+          <AgentBrowsingPage
+            browsingSessionId={sessionId}
+            browsingInferenceBackend={settings.browsingInferenceBackend}
+          />
+        )}
         {activeNav === "Settings" && (
           <SettingsPage settings={settings} onChange={handleSettingsChange} sessionId={sessionId} />
         )}
         {activeNav === "Memory" && <MemoryPage endpoint={endpoint} />}
         {activeNav === "Tasks" && <TasksPage />}
-        {activeNav === "Kanban" && <PlaceholderPage title="Kanban" />}
         {activeNav === "Workflows" && <WorkflowsPage />}
         {/* loadedKeys: derive from chat timeline context events once session state
              is lifted to App level.  See lib/loadedSkillKeys.ts for the helper

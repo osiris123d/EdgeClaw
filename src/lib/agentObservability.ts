@@ -27,7 +27,9 @@ export type EdgeClawGatewayAgentName =
   | "MainAgent"
   | "SubagentCoordinatorThink"
   | "CoderAgent"
-  | "TesterAgent";
+  | "TesterAgent"
+  /** Agent Browsing DO — matches AI Gateway `metadata.agent` conditional in `docs/ai-gateway-agent-router.json`. */
+  | "BrowserAgent";
 
 const GATEWAY_META_KEYS = ["worker", "agent", "project", "task", "run"] as const;
 
@@ -86,6 +88,7 @@ export function edgeClawGatewayAgentFromConstructorName(className: string): Edge
   if (className === "SubagentCoordinatorThink") return "SubagentCoordinatorThink";
   if (className === "CoderAgent") return "CoderAgent";
   if (className === "TesterAgent") return "TesterAgent";
+  if (className === "EdgeclawBrowsingAgent") return "BrowserAgent";
   return "MainAgent";
 }
 

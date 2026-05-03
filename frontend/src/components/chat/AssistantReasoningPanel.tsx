@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactElement } from "react";
 import type { ActivityStepStatus, AssistantTurn, AssistantTurnStatus, ReasoningItem } from "../../types";
 import { McpReauthCallout } from "./McpReauthCallout";
 
@@ -31,7 +31,7 @@ function getStepLabel(status: ActivityStepStatus): string {
   }
 }
 
-function renderDetailLine(line: string, index: number): JSX.Element {
+function renderDetailLine(line: string, index: number): ReactElement {
   const trimmed = line.trim();
   const urlMatch = trimmed.match(/https?:\/\/\S+/i);
 

@@ -27,6 +27,10 @@
 			{
 				"name": "SUBAGENT_COORDINATOR",
 				"class_name": "SubagentCoordinatorThink"
+			},
+			{
+				"name": "EDGECLAW_BROWSING_AGENT",
+				"class_name": "EdgeclawBrowsingAgent"
 			}
 		]
 	},
@@ -71,6 +75,12 @@
 			"tag": "v6-subagent-coordinator",
 			"new_sqlite_classes": [
 				"SubagentCoordinatorThink"
+			]
+		},
+		{
+			"tag": "v7-edgeclaw-browsing-agent",
+			"new_sqlite_classes": [
+				"EdgeclawBrowsingAgent"
 			]
 		}
 	],

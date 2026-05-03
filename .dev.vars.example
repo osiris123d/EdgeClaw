@@ -27,6 +27,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 CLOUDFLARE_API_TOKEN=
 CLOUDFLARE_BROWSER_API_TOKEN=
+# Optional alias (same permissions as Browser-capable token) — used by Agent Browsing Live View API
+# BROWSER_RENDERING_API_TOKEN=
 
 # Token used by AI Gateway for request authorization (if your gateway requires it)
 AI_GATEWAY_TOKEN=

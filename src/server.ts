@@ -58,6 +58,7 @@ import { ReproParentThink, ReproChildThink } from "./repro/subagentThinkReproDo"
 import { DebugMinimalDelegationChildThink } from "./debug/DebugMinimalDelegationChildThink";
 import { DebugPingChildThink } from "./debug/DebugPingChildThink";
 import { SubagentCoordinatorThink } from "./agents/SubagentCoordinatorThink";
+import { EdgeclawBrowsingAgent } from "./browsing/EdgeclawBrowsingAgent";
 
 // ── Versioned webhook payload ────────────────────────────────────────────────
 
@@ -720,4 +721,4 @@ export default {
 // ── Durable Object exports ────────────────────────────────────────────────────
 // These must be module-level for Cloudflare to resolve `ctx.exports`.
 
-export { MainAgent, ResearchAgent, ExecutionAgent, CoderAgent, TesterAgent, ReproParentAgent, ReproChildAgent, ReproParentThink, ReproChildThink, DebugMinimalDelegationChildThink, DebugPingChildThink, SubagentCoordinatorThink, EdgeclawResearchWorkflow, EdgeclawPageIntelWorkflow, EdgeclawPreviewPromotionWorkflow, EdgeclawProductionDeployWorkflow };
+export { MainAgent, ResearchAgent, ExecutionAgent, CoderAgent, TesterAgent, ReproParentAgent, ReproChildAgent, ReproParentThink, ReproChildThink, DebugMinimalDelegationChildThink, DebugPingChildThink, SubagentCoordinatorThink, EdgeclawBrowsingAgent, EdgeclawResearchWorkflow, EdgeclawPageIntelWorkflow, EdgeclawPreviewPromotionWorkflow, EdgeclawProductionDeployWorkflow };
