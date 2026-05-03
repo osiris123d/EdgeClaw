@@ -1,0 +1,47 @@
+# ── .dev.vars.example ─────────────────────────────────────────────────────────
+#
+# Copy this file to .dev.vars and fill in your real values.
+#
+#   cp .dev.vars.example .dev.vars
+#
+# .dev.vars is gitignored — never commit real credentials.
+#
+# Two uses:
+#   1. wrangler dev   — reads .dev.vars automatically for local development
+#   2. npm run secrets — runs scripts/apply-secrets.ps1 which pipes each value
+#                        to `wrangler secret put`, setting them in production
+#                        (secrets persist across all future deploys — set once)
+#
+# ── AI model keys ─────────────────────────────────────────────────────────────
+# NOTE: CLOUDFLARE_ACCOUNT_ID and AI_GATEWAY_BASE_URL are plain vars in
+# wrangler.jsonc — fill them in there once. They are NOT secrets and cannot
+# be set via `wrangler secret put` while also defined as vars.
+
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+
+# ── Cloudflare ─────────────────────────────────────────────────────────────────
+# API token used for browser automation (Cloudflare Browser Rendering)
+# Create at: https://dash.cloudflare.com/profile/api-tokens
+# Required permissions: Workers AI (read), Browser Rendering (edit)
+
+CLOUDFLARE_API_TOKEN=
+CLOUDFLARE_BROWSER_API_TOKEN=
+
+# Token used by AI Gateway for request authorization (if your gateway requires it)
+AI_GATEWAY_TOKEN=
+
+# ── MCP (optional) ────────────────────────────────────────────────────────────
+
+MCP_SERVER_URL=
+MCP_AUTH_TOKEN=
+
+# ── Debug: real coding orchestration HTTP (production secret) ─────────────────
+# ENABLE_DEBUG_ORCHESTRATION_ENDPOINT is a plain var in wrangler.jsonc (do NOT duplicate
+# here for `npm run secrets` — Wrangler rejects a secret with the same name as a var).
+#
+# DEBUG_ORCHESTRATION_TOKEN — Worker secret only. Add a line below with a long random value,
+# then run:  npm run secrets   (or:  echo "<token>" | wrangler secret put DEBUG_ORCHESTRATION_TOKEN)
+# When unset in production, the route has no Bearer requirement. When set, send:
+#   Authorization: Bearer <token>
+# DEBUG_ORCHESTRATION_TOKEN=

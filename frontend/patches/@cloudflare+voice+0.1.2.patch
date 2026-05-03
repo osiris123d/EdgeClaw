@@ -1,0 +1,48 @@
+diff --git a/node_modules/@cloudflare/voice/dist/voice-client.js b/node_modules/@cloudflare/voice/dist/voice-client.js
+index a5b1545..6b07dda 100644
+--- a/node_modules/@cloudflare/voice/dist/voice-client.js
++++ b/node_modules/@cloudflare/voice/dist/voice-client.js
+@@ -290,10 +290,8 @@ var VoiceClient = class {
+ 	}
+ 	toggleMute() {
+ 		this.#isMuted = !this.#isMuted;
+-		if (this.#isMuted) {
+-			this.#audioLevel = 0;
+-			this.#emit("audiolevelchange", 0);
+-		}
++		// Do not clear #audioLevel on mute: worklet still delivers RMS; UI can show
++		// local mic level even while transmission is silenced.
+ 		if (this.#isMuted && this.#isSpeaking) {
+ 			this.#isSpeaking = false;
+ 			if (this.#silenceTimer) {
+@@ -506,12 +504,15 @@ var VoiceClient = class {
+ 			const source = ctx.createMediaStreamSource(stream);
+ 			const workletNode = new AudioWorkletNode(ctx, "audio-capture-processor");
+ 			this.#workletNode = workletNode;
++			// Mute = do not *send* audio; still run RMS for local level meter / UX.
+ 			workletNode.port.onmessage = (event) => {
+-				if (event.data.type === "audio" && !this.#isMuted) {
++				if (event.data.type === "audio") {
+ 					const samples = event.data.samples;
+ 					const rms = computeRMS(samples);
+-					const pcm = floatTo16BitPCM(samples);
+-					if (this.#transport?.connected) this.#transport.sendBinary(pcm);
++					if (!this.#isMuted) {
++						const pcm = floatTo16BitPCM(samples);
++						if (this.#transport?.connected) this.#transport.sendBinary(pcm);
++					}
+ 					this.#processAudioLevel(rms);
+ 				}
+ 			};
+@@ -531,9 +532,10 @@ var VoiceClient = class {
+ 		this.#resetDetection();
+ 	}
+ 	#processAudioLevel(rms) {
+-		if (this.#isMuted) return;
+ 		this.#audioLevel = rms;
+ 		this.#emit("audiolevelchange", rms);
++		// VAD, interrupt, and end-of-speech to the server only when not muted
++		if (this.#isMuted) return;
+ 		if (this.#isPlaying && rms > this.#interruptThreshold) {
+ 			this.#interruptChunkCount++;
+ 			if (this.#interruptChunkCount >= this.#interruptChunks) {

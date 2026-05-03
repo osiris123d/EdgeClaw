@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-promotion-integration",
+    "rootDir": "./src",
+    "declaration": false,
+    "declarationMap": false,
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": [
+    "src/workspace/sharedWorkspaceTypes.ts",
+    "src/agents/codingLoop/testFixtures/inMemorySharedWorkspaceStorage.ts",
+    "src/promotion/**/*.ts",
+    "src/deploy/**/*.ts"
+  ]
+}

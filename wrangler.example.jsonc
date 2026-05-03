@@ -1,0 +1,79 @@
+// Copy to wrangler.jsonc and replace every YOUR_* placeholder.
+// Keep secrets out of this file. Use `wrangler secret put` for secret values.
+{
+  "name": "YOUR_WORKER_NAME",
+  "main": "src/server.ts",
+  "compatibility_date": "2025-01-14",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MAIN_AGENT",
+        "class_name": "MainAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "MainAgent",
+        "ResearchAgent",
+        "ExecutionAgent"
+      ]
+    }
+  ],
+
+  "triggers": {
+    "crons": ["0 6 * * *"]
+  },
+
+  "vars": {
+    "ENVIRONMENT": "development",
+    // OpenAI-compat base URL; include /openai/compat. Account + gateway path segments are parsed for the AI Gateway List Logs proxy when AI_GATEWAY_ID is unset.
+    "AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/YOUR_ACCOUNT_ID/YOUR_GATEWAY_SLUG/openai/compat",
+    // Optional explicit gateway id (same slug as in the URL) if the base URL is non-standard.
+    // "AI_GATEWAY_ID": "YOUR_GATEWAY_SLUG",
+    // Sub-Agents Runs tab "Cost / logs" uses GET /api/coordinator/ai-gateway/runs/:runId/logs — set via wrangler secret put (not vars): CLOUDFLARE_API_TOKEN (AI Gateway read). CLOUDFLARE_ACCOUNT_ID can be a var or parsed from the URL above.
+    "ENABLE_BROWSER_TOOLS": "false",
+    "ENABLE_BROWSER_TOOL_DEBUG": "false",
+    "ENABLE_CODE_EXECUTION": "false",
+    "ENABLE_MCP": "false",
+    "ENABLE_VOICE": "false",
+    // Set to "true" once SKILLS_BUCKET is created and bound below
+    "ENABLE_SKILLS": "false",
+    "OBSERVABILITY_LEVEL": "info"
+  },
+
+  "assets": {
+    "directory": "./frontend/dist",
+    "binding": "ASSETS"
+  },
+
+  "browser": {
+    "binding": "BROWSER"
+  },
+
+  "worker_loaders": [
+    { "binding": "LOADER" }
+  ],
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  // R2 bucket for session-skills (on-demand skill loading via R2SkillProvider).
+  // Create with: wrangler r2 bucket create YOUR_WORKER_NAME-skills
+  "r2_buckets": [
+    {
+      "binding": "SKILLS_BUCKET",
+      "bucket_name": "YOUR_WORKER_NAME-skills"
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  }
+}

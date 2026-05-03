@@ -1,0 +1,220 @@
+// EdgeClaw Worker — **account-agnostic template** safe to commit to a public repo.
+// Replace every `__REPLACE_*` / `YOUR_*` value; replace the **`changeme`** R2 name prefix with a unique
+// lowercase slug (or create buckets exactly named `changeme-edgeclaw-*` for throwaway testing).
+// Optional: keep a **private** copy with real IDs (e.g. `wrangler.local.jsonc`) and deploy with
+//   wrangler deploy --config wrangler.local.jsonc
+// (add `wrangler.local.jsonc` to .gitignore — see README "Wrangler and secrets").
+{
+	"name": "edgeclaw-truth-agent",
+	"main": "src/server.ts",
+	// Sub-agents (CoderAgent/TesterAgent via `subAgent()`) need `ctx.exports` / `ctx.facets`.
+	// Use compatibility_date >= 2025-11-17 (defaults on) — do not set `enable_ctx_exports` in flags
+	// for that date; the upload API rejects it as redundant (error 10021).
+	"compatibility_date": "2025-11-17",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "MAIN_AGENT",
+				"class_name": "MainAgent"
+			},
+			{
+				"name": "REPRO_SUBAGENT_AGENT",
+				"class_name": "ReproParentAgent"
+			},
+			{
+				"name": "SUBAGENT_COORDINATOR",
+				"class_name": "SubagentCoordinatorThink"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "v1",
+			"new_sqlite_classes": [
+				"MainAgent",
+				"ResearchAgent",
+				"ExecutionAgent"
+			]
+		},
+		{
+			"tag": "v2-subagents-coder-tester",
+			"new_sqlite_classes": [
+				"CoderAgent",
+				"TesterAgent"
+			]
+		},
+		{
+			"tag": "v3-repro-subagent-minimal",
+			"new_sqlite_classes": [
+				"ReproParentAgent",
+				"ReproChildAgent",
+				"ReproParentThink",
+				"ReproChildThink"
+			]
+		},
+		{
+			"tag": "v4-debug-minimal-delegation-child",
+			"new_sqlite_classes": [
+				"DebugMinimalDelegationChildThink"
+			]
+		},
+		{
+			"tag": "v5-debug-ping-child",
+			"new_sqlite_classes": [
+				"DebugPingChildThink"
+			]
+		},
+		{
+			"tag": "v6-subagent-coordinator",
+			"new_sqlite_classes": [
+				"SubagentCoordinatorThink"
+			]
+		}
+	],
+	"triggers": {
+		"crons": [
+			"0 6 * * *"
+		]
+	},
+	// Plain-text vars — precedence: docs/coding-platform-architecture.md — cutover: docs/operator-live-readiness-checklist.md
+	// These are NOT secrets — fill in your real values here once and they
+	// deploy automatically with every `npm run deploy`.
+	//
+	// Actual secrets (API keys, tokens) are stored separately via .dev.vars:
+	//   1. cp .dev.vars.example .dev.vars  (fill in token/key values)
+	//   2. npm run secrets                 (pushes them to Cloudflare once)
+	//   → secrets then persist across every future deploy automatically
+	//
+	// Debug orchestration route: `ENABLE_DEBUG_ORCHESTRATION_ENDPOINT` is a plain var inside `vars` below.
+	// `DEBUG_ORCHESTRATION_TOKEN` is a Worker secret only — `wrangler secret put` / `npm run secrets`, never a `vars` entry.
+	"vars": {
+		// Use "staging" / "production" per how you deploy; public clones often use "development".
+		"ENVIRONMENT": "development",
+		// 32-char hex account id from https://dash.cloudflare.com/ → account home URL.
+		"CLOUDFLARE_ACCOUNT_ID": "__REPLACE_WITH_YOUR_CLOUDFLARE_ACCOUNT_ID__",
+		// AI Gateway OpenAI-compat base URL (account + gateway slug). Create gateway in AI → Gateways.
+		"AI_GATEWAY_BASE_URL": "https://gateway.ai.cloudflare.com/v1/__REPLACE_WITH_YOUR_CLOUDFLARE_ACCOUNT_ID__/YOUR_GATEWAY_SLUG/compat",
+		"ENABLE_BROWSER_TOOLS": "true",
+		"ENABLE_BROWSER_TOOL_DEBUG": "false",
+		"ENABLE_CODE_EXECUTION": "false",
+		"ENABLE_MCP": "true",
+		"ENABLE_VOICE": "true",
+		// Set to "true" once the SKILLS_BUCKET R2 bucket is created and bound below
+		"ENABLE_SKILLS": "true",
+		// repo_git_* tools (set "false" to disable). Live git still needs GitExecutionAdapter / MCP — see src/repo/
+		"ENABLE_GIT_INTEGRATION_TOOLS": "true",
+		"OBSERVABILITY_LEVEL": "info",
+		// Debug: GET|POST /api/debug/orchestrate → real MainAgent coding loop (tiny task; see src/debug/). Plain var only.
+		// Set to "false" and redeploy to disable without code changes. Bearer auth is enforced only when secret DEBUG_ORCHESTRATION_TOKEN is set.
+		"ENABLE_DEBUG_ORCHESTRATION_ENDPOINT": "true",
+		"ENABLE_SUBAGENT_REPRO_ENDPOINT": "true",
+		// Must match PROMOTION_ARTIFACTS_BUCKET bucket_name — used in PromotionArtifactRef.storageUri
+		"PROMOTION_ARTIFACTS_BUCKET_NAME": "changeme-edgeclaw-promotion-artifacts",
+		// Workers Artifacts (git-backed manifests) — set "true" only when `artifacts` binding is present AND your account has Artifacts enabled (API may return code 10015 if not).
+		"ENABLE_PROMOTION_ARTIFACTS_CF_ARTIFACTS": "false",
+		// Repo name for Artifacts path (ignored while ENABLE_PROMOTION_ARTIFACTS_CF_ARTIFACTS is false). Keeps dashboard ↔ wrangler vars aligned.
+		"PROMOTION_ARTIFACTS_REPO_NAME": "edgeclaw-truth-promotion",
+		// Flagship Workers binding — set "true" only when Flagship is enabled in the dashboard + `flagship` block below.
+		"ENABLE_FLAGSHIP_BINDING": "false",
+		// Optional when binding is enabled: must match your Flagship string flag key.
+		// "FLAGSHIP_RELEASE_GATE_FLAG_KEY": "edgeclaw-release-gate",
+		// Preview deploy: set ENABLE_PREVIEW_DEPLOY_R2="false" to disable verified preview (noop). PREVIEW_DEPLOY_PUBLIC_URL overrides workers.dev URL resolution.
+		// Real preview Worker version upload (separate DO-free stub script — see docs/preview-deploy-cloudflare.md):
+		// ENABLE_PREVIEW_WORKER_VERSION_UPLOAD="true" + PREVIEW_WORKER_UPLOAD_SCRIPT_NAME + CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN (secret).
+		// Optional: PREVIEW_WORKER_UPLOAD_COMPATIBILITY_DATE (default matches compatibility_date above).
+		// ENABLE_PREVIEW_DEPLOY_CF_WITNESS="true" + CLOUDFLARE_API_TOKEN (secret): optional GET script-settings witness after manifest verify + optional upload — does not replace upload.
+		// "PREVIEW_DEPLOY_PUBLIC_URL": "https://my-preview.example.com",
+		// Production deploy (separate from preview): ENABLE_PRODUCTION_DEPLOY="false" forces noop. PRODUCTION_DEPLOY_PUBLIC_URL / PRODUCTION_WORKER_SCRIPT_NAME for URL hints.
+		// ENABLE_PRODUCTION_DEPLOY_CF_WITNESS="true" + CLOUDFLARE_API_TOKEN: optional script-settings witness — does not upload traffic or versions.
+		// Flagship release gate: HTTP POST to FLAGSHIP_EVALUATION_URL — put FLAGSHIP_EVALUATION_AUTH_TOKEN in .dev.vars.
+		// ENABLE_FLAGSHIP_HTTP="false" skips HTTP only; native Workers Flagship binding (`FLAGS`) uses ENABLE_FLAGSHIP_BINDING + flagship block below.
+		// "FLAGSHIP_EVALUATION_URL": "https://policy.example.com/v1/release-gate/evaluate",
+	},
+	"assets": {
+		"directory": "./frontend/dist",
+		"binding": "ASSETS"
+	},
+	"browser": {
+		"binding": "BROWSER"
+	},
+	"worker_loaders": [
+		{
+			"binding": "LOADER"
+		}
+	],
+	"ai": {
+		"binding": "AI"
+	},
+	// R2 — create buckets in your account, then set names here (globally unique per account).
+	//   wrangler r2 bucket create changeme-edgeclaw-skills
+	//   wrangler r2 bucket create changeme-edgeclaw-promotion-artifacts
+	// Keep PROMOTION_ARTIFACTS_BUCKET_NAME in vars aligned with the promotion bucket name.
+	"r2_buckets": [
+		{
+			"binding": "SKILLS_BUCKET",
+			"bucket_name": "changeme-edgeclaw-skills"
+		},
+		{
+			"binding": "PROMOTION_ARTIFACTS_BUCKET",
+			"bucket_name": "changeme-edgeclaw-promotion-artifacts"
+		}
+	],
+	// Optional: KV for SharedWorkspaceGateway (CoderAgent/TesterAgent collaboration).
+	// Create: wrangler kv namespace create edgeclaw-truth-shared-workspace
+	// Then add binding id from `wrangler kv namespace list`:
+	// "kv_namespaces": [
+	//   { "binding": "SHARED_WORKSPACE_KV", "id": "<namespace-id>" }
+	// ],
+	// Deferred: alternate backends implement SharedWorkspaceStorage without changing AI tool names (@see src/workspace/sharedWorkspaceTypes.ts).
+	// Cloudflare Flagship (optional release gate). Uncomment `flagship` + set ENABLE_FLAGSHIP_BINDING=true when enabled on your account.
+	// "flagship": {
+	// 	"binding": "FLAGS",
+	// 	"app_id": "<your-flagship-app-id>"
+	// },
+	// Cloudflare Artifacts (optional). Uncomment when your account has Artifacts access; otherwise use R2 `PROMOTION_ARTIFACTS_BUCKET` + ENABLE_PROMOTION_ARTIFACTS_CF_ARTIFACTS=true.
+	// "artifacts": [
+	// 	{ "binding": "ARTIFACTS", "namespace": "edgeclaw-promotion-manifests" }
+	// ],
+	// ENABLE_PROMOTION_ARTIFACTS_CF_ARTIFACTS + `artifacts` binding when enabled on account.
+	"observability": {
+		"enabled": true
+	},
+	// ── Cloudflare Workflows ──────────────────────────────────────────────────
+	// Each entry registers a real durable workflow class.
+	// The "binding" value must match the entrypoint field in wf_definitions rows
+	// created through the Workflows UI, and must be added to src/lib/env.ts.
+	"workflows": [
+		{
+			"name": "edgeclaw-research-workflow",
+			"binding": "EDGECLAW_RESEARCH_WORKFLOW",
+			"class_name": "EdgeclawResearchWorkflow"
+		},
+		{
+			"name": "edgeclaw-page-intel-workflow",
+			"binding": "EDGECLAW_PAGE_INTEL_WORKFLOW",
+			"class_name": "EdgeclawPageIntelWorkflow"
+		},
+		{
+			"name": "edgeclaw-preview-promotion-workflow",
+			"binding": "EDGECLAW_PREVIEW_PROMOTION_WORKFLOW",
+			"class_name": "EdgeclawPreviewPromotionWorkflow"
+		},
+		{
+			"name": "edgeclaw-production-deploy-workflow",
+			"binding": "EDGECLAW_PRODUCTION_DEPLOY_WORKFLOW",
+			"class_name": "EdgeclawProductionDeployWorkflow"
+		}
+	]
+	// Optional KV — uncomment after `wrangler kv namespace create …` and paste ids from `wrangler kv namespace list`.
+	// "kv_namespaces": [
+	// 	{ "binding": "SHARED_WORKSPACE_KV", "id": "YOUR_SHARED_WORKSPACE_KV_ID" },
+	// 	{
+	// 		"binding": "COORDINATOR_CONTROL_PLANE_KV",
+	// 		"id": "YOUR_COORDINATOR_KV_ID",
+	// 		"preview_id": "YOUR_COORDINATOR_PREVIEW_KV_ID"
+	// 	}
+	// ]
+}

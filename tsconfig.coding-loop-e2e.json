@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "./dist-e2e",
+    "rootDir": "./src",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": true,
+    "types": ["@cloudflare/workers-types", "node"]
+  },
+  "include": [
+    "src/workspace/sharedWorkspaceTypes.ts",
+    "src/agents/delegation.ts",
+    "src/agents/codingLoop/**/*.ts"
+  ]
+}
