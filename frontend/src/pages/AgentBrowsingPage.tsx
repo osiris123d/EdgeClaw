@@ -332,8 +332,14 @@ function UserActionBanner({
   );
 }
 
-function useBrowsingAgentSocketOptions(browsingSessionId: string) {
+function useBrowsingAgentSocketOptions(
+  browsingSessionId: string,
+  browsingInferenceBackend: BrowsingInferenceBackend
+) {
   return useMemo(() => {
+    const query: Record<string, string> = {
+      browsingInferenceBackend,
+    };
     const fromEnv = import.meta.env.VITE_BROWSING_AGENT_WS_URL as string | undefined;
     if (fromEnv) {
       const wsUrl = fromEnv.replace(/\/[^/]+$/, `/${browsingSessionId}`);
@@ -344,6 +350,7 @@ function useBrowsingAgentSocketOptions(browsingSessionId: string) {
         protocol: (wsUrl.startsWith("wss") ? "wss" : "ws") as "ws" | "wss",
         agent: "EdgeclawBrowsingAgent",
         name: browsingSessionId,
+        query,
       };
     }
     const protocol = window.location.protocol === "https:" ? ("wss" as const) : ("ws" as const);
@@ -351,8 +358,8 @@ function useBrowsingAgentSocketOptions(browsingSessionId: string) {
       window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
         ? "127.0.0.1:8788"
         : window.location.host;
-    return { host, protocol, agent: "EdgeclawBrowsingAgent", name: browsingSessionId };
-  }, [browsingSessionId]);
+    return { host, protocol, agent: "EdgeclawBrowsingAgent", name: browsingSessionId, query };
+  }, [browsingSessionId, browsingInferenceBackend]);
 }
 
 class BrowsingErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -413,10 +420,11 @@ function AgentBrowsingInner({
   const [userActionNeeded, setUserActionNeeded] = useState<{ message: string; toolCallId: string } | null>(null);
   const clearedRef = useRef(false);
 
-  const socketOpts = useBrowsingAgentSocketOptions(browsingSessionId);
+  const socketOpts = useBrowsingAgentSocketOptions(browsingSessionId, browsingInferenceBackend);
 
   const agent = useAgent({
     ...socketOpts,
+    queryDeps: [browsingInferenceBackend],
     onOpen: useCallback(() => {
       setConnected(true);
     }, []),
@@ -470,7 +478,7 @@ function AgentBrowsingInner({
           setLiveViewUrl(sync.liveViewUrl);
         }
       } catch (e) {
-        console.warn("[AgentBrowsing] sync / inference backend failed:", e);
+        console.error("[AgentBrowsing] sync / inference backend failed:", e);
       }
     })();
     return () => {

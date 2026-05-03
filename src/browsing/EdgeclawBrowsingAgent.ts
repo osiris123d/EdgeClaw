@@ -4,6 +4,7 @@
  */
 import { createWorkersAI } from "workers-ai-provider";
 import { callable } from "agents";
+import type { Connection, ConnectionContext } from "agents";
 import { AIChatAgent, type OnChatMessageOptions } from "@cloudflare/ai-chat";
 import {
   streamText,
@@ -64,11 +65,27 @@ export class EdgeclawBrowsingAgent extends AIChatAgent<Env> {
   }
 
   @callable()
-  setBrowsingInferenceBackend(backend: BrowsingInferenceBackend): void {
+  async setBrowsingInferenceBackend(backend: BrowsingInferenceBackend): Promise<void> {
     if (backend !== "workers-ai" && backend !== "ai-gateway") {
       throw new Error(`[EdgeclawBrowsingAgent] Invalid browsing inference backend: ${String(backend)}`);
     }
     this.browsingInferenceBackend = backend;
+  }
+
+  /**
+   * Apply inference mode from the WebSocket upgrade URL (`?browsingInferenceBackend=…`).
+   * The UI passes this via `useAgent({ query })` so the DO is correct even if RPC ordering fails.
+   */
+  override async onConnect(_connection: Connection, ctx: ConnectionContext): Promise<void> {
+    try {
+      const url = new URL(ctx.request.url);
+      const q = url.searchParams.get("browsingInferenceBackend");
+      if (q === "ai-gateway" || q === "workers-ai") {
+        this.browsingInferenceBackend = q;
+      }
+    } catch {
+      /* ignore bad upgrade URL */
+    }
   }
 
   async onChatMessage(
