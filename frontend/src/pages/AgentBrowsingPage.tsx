@@ -29,6 +29,7 @@ import {
   Image as ImageIcon,
   List,
   Desktop,
+  ArrowSquareOut,
   Bell,
   BellSlash,
   HandPointing,
@@ -154,24 +155,15 @@ function BrowserPanel({
 }) {
   const actionsEndRef = useRef<HTMLDivElement>(null);
   const [showActions, setShowActions] = useState(true);
-  const [viewMode, setViewMode] = useState<"screencast" | "liveview">("screencast");
-
-  const isChrome =
-    typeof navigator !== "undefined" &&
-    /Chrome/.test(navigator.userAgent) &&
-    !/Edg/.test(navigator.userAgent);
-
-  const prevLiveUrlRef = useRef<string | null>(null);
+  const [liveViewOpen, setLiveViewOpen] = useState(false);
 
   useEffect(() => {
     actionsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [actions]);
 
+  // Auto-close Live View when the session ends (no URL means browser stopped)
   useEffect(() => {
-    const prev = prevLiveUrlRef.current;
-    if (liveViewUrl && !prev) setViewMode("liveview");
-    if (!liveViewUrl && prev) setViewMode("screencast");
-    prevLiveUrlRef.current = liveViewUrl;
+    if (!liveViewUrl) setLiveViewOpen(false);
   }, [liveViewUrl]);
 
   const isActive = browserStatus !== "idle" && browserStatus !== "done";
@@ -185,15 +177,26 @@ function BrowserPanel({
           <span className="ab-badge ab-badge-muted">{browserStatus === "idle" ? "Idle" : browserStatus}</span>
         </div>
         <div className="ab-browser-actions">
-          <button
-            type="button"
-            className={`ab-icon-btn ${viewMode === "liveview" ? "ab-icon-btn-active" : ""}`}
-            onClick={() => setViewMode((v) => (v === "liveview" ? "screencast" : "liveview"))}
-            disabled={!liveViewUrl}
-            title="Toggle Live View"
-          >
-            <Desktop size={14} />
-          </button>
+          {liveViewUrl && (
+            <>
+              <button
+                type="button"
+                className={`ab-icon-btn ${liveViewOpen ? "ab-icon-btn-active" : ""}`}
+                onClick={() => setLiveViewOpen((v) => !v)}
+                title={liveViewOpen ? "Switch to screencast" : "Switch to Live View — interactive DevTools session in-panel (Chrome). Use to help the agent with CAPTCHAs or blocked pages."}
+              >
+                <Desktop size={14} />
+              </button>
+              <button
+                type="button"
+                className="ab-icon-btn"
+                onClick={() => window.open(liveViewUrl, "_blank", "noopener,noreferrer")}
+                title="Open Live View in a new Chrome tab — best for CAPTCHA / interaction (no iframe sandbox limits)."
+              >
+                <ArrowSquareOut size={14} />
+              </button>
+            </>
+          )}
           <button
             type="button"
             className="ab-icon-btn"
@@ -219,22 +222,15 @@ function BrowserPanel({
         </div>
       )}
 
-      {viewMode === "liveview" && liveViewUrl && !isChrome && (
-        <div className="ab-warn-bar">
-          <WarningCircle size={12} />
-          <span className="ab-muted">Live View works best in Chrome.</span>
-        </div>
-      )}
-
       <div className="ab-browser-body">
         <div className="ab-browser-viewport">
-          {viewMode === "liveview" && liveViewUrl ? (
+          {liveViewOpen && liveViewUrl ? (
             <iframe
               key={liveViewUrl}
               src={liveViewUrl}
               className="ab-live-iframe"
               title="Browser Live View"
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox allow-modals allow-pointer-lock"
             />
           ) : (
             <div className="ab-screencast">
@@ -419,6 +415,12 @@ function AgentBrowsingInner({
   const [liveViewUrl, setLiveViewUrl] = useState<string | null>(null);
   const [userActionNeeded, setUserActionNeeded] = useState<{ message: string; toolCallId: string } | null>(null);
   const clearedRef = useRef(false);
+  const [activeInferenceBackend, setActiveInferenceBackend] =
+    useState<BrowsingInferenceBackend>(browsingInferenceBackend);
+
+  useEffect(() => {
+    setActiveInferenceBackend(browsingInferenceBackend);
+  }, [browsingInferenceBackend]);
 
   const socketOpts = useBrowsingAgentSocketOptions(browsingSessionId, browsingInferenceBackend);
 
@@ -476,6 +478,9 @@ function AgentBrowsingInner({
         }
         if (typeof sync.liveViewUrl === "string" && sync.liveViewUrl) {
           setLiveViewUrl(sync.liveViewUrl);
+        }
+        if (sync.inferenceBackend === "ai-gateway" || sync.inferenceBackend === "workers-ai") {
+          setActiveInferenceBackend(sync.inferenceBackend);
         }
       } catch (e) {
         console.error("[AgentBrowsing] sync / inference backend failed:", e);
@@ -577,9 +582,8 @@ function AgentBrowsingInner({
           <Globe size={22} weight="bold" />
           <h2 className="page-header">Agent Browsing</h2>
           <span className="ab-badge ab-badge-muted">
-            {browsingInferenceBackend === "ai-gateway" ? "AI Gateway" : "Workers AI"}
+            {activeInferenceBackend === "ai-gateway" ? "AI Gateway" : "Workers AI"}
           </span>
-          <span className="ab-badge ab-badge-muted">Live View</span>
         </div>
         <div className="ab-page-header-right">
           <span className="ab-conn">

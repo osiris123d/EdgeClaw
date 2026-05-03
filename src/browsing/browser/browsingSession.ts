@@ -98,7 +98,8 @@ export async function detectAndSwitchToNewPage(
   state: BrowserState,
   currentPage: Page,
   knownPageCount: number,
-  broadcastEvent: (event: BrowserEvent) => void
+  broadcastEvent: (event: BrowserEvent) => void,
+  env: Env
 ): Promise<void> {
   const pagesAfter = state.context?.pages() ?? [];
   const newPages = pagesAfter.filter((p) => p !== currentPage && !p.isClosed());
@@ -107,7 +108,7 @@ export async function detectAndSwitchToNewPage(
     console.log(
       `[Browser] New page detected via context.pages(): ${latest.url()}`
     );
-    await switchToPage(state, latest, broadcastEvent);
+    await switchToPage(state, latest, broadcastEvent, env);
     return;
   }
 
@@ -135,7 +136,7 @@ export async function detectAndSwitchToNewPage(
         console.log(
           `[Browser] New page detected via CDP URL match: ${matchingPage.url()}`
         );
-        await switchToPage(state, matchingPage, broadcastEvent);
+        await switchToPage(state, matchingPage, broadcastEvent, env);
         return;
       }
     }
@@ -151,7 +152,7 @@ export async function detectAndSwitchToNewPage(
           })
           .catch(() => null);
         if (newPage && !newPage.isClosed()) {
-          await switchToPage(state, newPage, broadcastEvent);
+          await switchToPage(state, newPage, broadcastEvent, env);
           return;
         }
       } catch {
@@ -167,7 +168,7 @@ export async function detectAndSwitchToNewPage(
           (p) => !p.isClosed() && p.url() === newTarget.url
         );
         if (match) {
-          await switchToPage(state, match, broadcastEvent);
+          await switchToPage(state, match, broadcastEvent, env);
           return;
         }
 
@@ -176,7 +177,8 @@ export async function detectAndSwitchToNewPage(
         );
         try {
           await currentPage.goto(newTarget.url, {
-            waitUntil: "domcontentloaded"
+            waitUntil: "domcontentloaded",
+            timeout: 90_000,
           });
         } catch (e) {
           console.warn("[Browser] Failed to navigate to new target URL:", e);
@@ -220,6 +222,22 @@ export async function resolveSessionId(
   }
 }
 
+/** Re-resolve DevTools Live View URL for the active Playwright page (e.g. after navigation or tab switch). */
+export async function broadcastLiveViewUpdate(
+  state: BrowserState,
+  env: Env,
+  broadcastEvent: (event: BrowserEvent) => void
+): Promise<void> {
+  if (!state.page || state.page.isClosed() || !env.BROWSER) return;
+  const sessionId = await resolveSessionId(env.BROWSER);
+  if (!sessionId) return;
+  const pageUrl = state.page.url();
+  const liveViewUrl = await fetchLiveViewUrlWithRetry(env, sessionId, { pageUrl });
+  if (liveViewUrl) {
+    broadcastEvent({ type: "browser-liveview-url", url: liveViewUrl });
+  }
+}
+
 async function createBrowserSession(
   state: BrowserState,
   env: Env,
@@ -233,15 +251,19 @@ async function createBrowserSession(
   });
 
   try {
-    const { browser, context, page } = await createBrowser(env, {
-      keepAlive: KEEP_ALIVE_MS
+    const launchOnce = () => createBrowser(env, { keepAlive: KEEP_ALIVE_MS });
+    const launched = await launchOnce().catch(async (firstErr) => {
+      console.warn("[Browser] Launch failed, retrying once:", firstErr);
+      await new Promise((r) => setTimeout(r, 400));
+      return launchOnce();
     });
+    const { browser, context, page } = launched;
     state.browser = browser;
     state.context = context;
     state.page = page;
 
     context.on("page", (newPage) => {
-      switchToPage(state, newPage, broadcastEvent);
+      switchToPage(state, newPage, broadcastEvent, env);
     });
   } catch (err) {
     console.error("[Browser] Failed to launch browser:", err);
@@ -266,14 +288,7 @@ async function createBrowserSession(
     state.knownTargetIds = new Set();
   }
 
-  const sessionId = await resolveSessionId(env.BROWSER!);
-
-  if (sessionId) {
-    const liveViewUrl = await fetchLiveViewUrlWithRetry(env, sessionId);
-    if (liveViewUrl) {
-      broadcastEvent({ type: "browser-liveview-url", url: liveViewUrl });
-    }
-  }
+  await broadcastLiveViewUpdate(state, env, broadcastEvent);
 
   console.log("[Browser] Session ready");
   return state.page;
@@ -282,7 +297,8 @@ async function createBrowserSession(
 async function switchToPage(
   state: BrowserState,
   newPage: Page,
-  broadcastEvent: (event: BrowserEvent) => void
+  broadcastEvent: (event: BrowserEvent) => void,
+  env: Env
 ): Promise<void> {
   if (newPage === state.page || newPage.isClosed()) return;
 
@@ -291,7 +307,7 @@ async function switchToPage(
     if (newPage === state.page) return;
   }
 
-  const switchPromise = doSwitchToPage(state, newPage, broadcastEvent);
+  const switchPromise = doSwitchToPage(state, newPage, broadcastEvent, env);
   state.switchingPage = switchPromise;
   try {
     await switchPromise;
@@ -305,7 +321,8 @@ async function switchToPage(
 async function doSwitchToPage(
   state: BrowserState,
   newPage: Page,
-  broadcastEvent: (event: BrowserEvent) => void
+  broadcastEvent: (event: BrowserEvent) => void,
+  env: Env
 ): Promise<void> {
   if (newPage.isClosed()) return;
 
@@ -359,12 +376,14 @@ async function doSwitchToPage(
     message: `Switched to new tab: ${title || newPage.url()}`
   });
 
+  await broadcastLiveViewUpdate(state, env, broadcastEvent);
+
   newPage.on("close", () => {
     if (state.page === newPage) {
       const pages = state.context?.pages().filter((p) => !p.isClosed()) ?? [];
       const fallback = pages.find((p) => p !== newPage);
       if (fallback) {
-        switchToPage(state, fallback, broadcastEvent);
+        switchToPage(state, fallback, broadcastEvent, env);
       } else {
         state.page = null;
         state.stopScreencast = null;

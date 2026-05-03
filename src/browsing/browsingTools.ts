@@ -15,6 +15,8 @@ export interface ToolDeps {
     currentPage: Page,
     knownPageCount: number
   ) => Promise<void>;
+  /** After a full navigation, re-resolve DevTools Live View URL for the active page URL. */
+  notifyPageNavigation?: () => Promise<void>;
 }
 
 export function createTools(deps: ToolDeps) {
@@ -26,7 +28,8 @@ export function createTools(deps: ToolDeps) {
     broadcastEvent,
     getSnapshotCdp,
     invalidateSnapshotCdp,
-    detectAndSwitchToNewPage
+    detectAndSwitchToNewPage,
+    notifyPageNavigation
   } = deps;
 
   return {
@@ -51,8 +54,12 @@ export function createTools(deps: ToolDeps) {
             status: "navigating",
             message: `Navigating to ${url}`
           });
-          await page.goto(url, { waitUntil: "domcontentloaded" });
+          await page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: 90_000,
+          });
           const title = await page.title();
+          await notifyPageNavigation?.();
           broadcastEvent({
             type: "browser-action",
             action: `Navigated to ${url}`,

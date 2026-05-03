@@ -29,6 +29,7 @@ import {
   invalidateSnapshotCdp,
   detectAndSwitchToNewPage,
   resolveSessionId,
+  broadcastLiveViewUpdate,
 } from "./browser/browsingSession";
 import type { BrowserEvent } from "./browsingTypes";
 import { createTools } from "./browsingTools";
@@ -97,6 +98,10 @@ export class EdgeclawBrowsingAgent extends AIChatAgent<Env> {
       this.broadcast(JSON.stringify(event));
     };
 
+    const broadcastLiveView = async () => {
+      await broadcastLiveViewUpdate(this.browserState, this.env, broadcastEvent);
+    };
+
     const tools = createTools({
       getPage: () =>
         ensureBrowserSession(this.browserState, this.env, broadcastEvent),
@@ -109,8 +114,10 @@ export class EdgeclawBrowsingAgent extends AIChatAgent<Env> {
           this.browserState,
           currentPage,
           knownPageCount,
-          broadcastEvent
+          broadcastEvent,
+          this.env
         ),
+      notifyPageNavigation: broadcastLiveView,
     });
 
     const pruned = pruneMessages({
@@ -190,7 +197,9 @@ export class EdgeclawBrowsingAgent extends AIChatAgent<Env> {
     if (hasActivePage && this.env.BROWSER) {
       const sessionId = await resolveSessionId(this.env.BROWSER);
       if (sessionId) {
-        const fresh = await fetchLiveViewUrlWithRetry(this.env, sessionId);
+        const fresh = await fetchLiveViewUrlWithRetry(this.env, sessionId, {
+          pageUrl: page.url(),
+        });
         if (fresh) {
           liveViewUrl = fresh;
           this.lastLiveViewUrl = fresh;
