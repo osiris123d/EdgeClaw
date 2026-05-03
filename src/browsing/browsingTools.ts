@@ -129,16 +129,55 @@ export function createTools(deps: ToolDeps) {
           );
           await cdp.detach();
 
-          await page
-            .getByRole(role as AriaRole, { name, exact: false })
-            .click();
-          await page.waitForLoadState("domcontentloaded").catch(() => {});
+          const locator = page.getByRole(role as AriaRole, { name, exact: false });
 
+          // ── Attempt 1: regular Playwright click (8 s fast-fail) ────────────
+          let clickMethod = "playwright";
+          try {
+            await locator.click({ timeout: 8_000 });
+          } catch (firstErr) {
+            // ── Attempt 2: JS click — bypasses CSS pointer-events:none ───────
+            let jsClickOk = false;
+            try {
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              await locator.evaluate((el: any) => el.click());
+              clickMethod = "js-click";
+              jsClickOk = true;
+            } catch {
+              /* fall through */
+            }
+
+            if (!jsClickOk) {
+              // ── Attempt 3: extract href and navigate directly ──────────────
+              // Handles "already active tab" (pointer-events:none) and overlays.
+              try {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const href = await locator.evaluate((el: any) => {
+                  const a = el.tagName === "A" ? el : el.closest?.("a");
+                  return a ? (a.href as string | undefined) ?? null : null;
+                });
+                if (typeof href === "string" && href) {
+                  await page.goto(href, {
+                    waitUntil: "domcontentloaded",
+                    timeout: 90_000
+                  });
+                  clickMethod = "href-navigate";
+                } else {
+                  throw firstErr;
+                }
+              } catch {
+                throw firstErr;
+              }
+            }
+          }
+
+          await page.waitForLoadState("domcontentloaded").catch(() => {});
           await detectAndSwitchToNewPage(page, pageTargetsBefore.length);
+          await notifyPageNavigation?.();
 
           broadcastEvent({
             type: "browser-action",
-            action: `Clicked ${role} "${name}"`,
+            action: `Clicked ${role} "${name}"${clickMethod !== "playwright" ? ` (via ${clickMethod})` : ""}`,
             step: stepCounter++
           });
           return {
