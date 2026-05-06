@@ -21,6 +21,10 @@
  * Binding key:  EDGECLAW_PAGE_INTEL_WORKFLOW
  * wrangler.jsonc name: edgeclaw-page-intel-workflow
  *
+ * Payload: `{ "url": "https://…" }` (or bare hostname — https is assumed). The field `"key"` is
+ * accepted as an alias for `url` when your trigger UI only exposes a generic string key —
+ * omitting both leaves `Page.navigate` without a URL and yields a CDP protocol error.
+ *
  * All business logic lives in pageIntelWorkflowLogic.ts so it can be
  * unit-tested in plain Node.js without the cloudflare: runtime.
  */

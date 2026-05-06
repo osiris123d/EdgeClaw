@@ -130,7 +130,14 @@ function totalBlueprintChars(pkg: ProjectBlueprintContextPackage): number {
     d.dataModels.length +
     d.apiDesign.length +
     d.aiInstructions.length +
-    d.context.length
+    d.context.length +
+    d.fileStructure.length
+  );
+}
+
+function taskHintsFileStructure(task: string): boolean {
+  return /\b(file|path|paths|staging|repo|frontend|back[- ]?end|database|\bdb\b|schema|route|routes|component|layout|directory|directories|folder)\b/i.test(
+    task
   );
 }
 
@@ -191,6 +198,20 @@ export function assembleBlueprintContextForCodingTask(
     parts.push(excerpt);
     parts.push("");
     excerptBodyLen += excerpt.length;
+  }
+
+  const fsBody = pkg.blueprint.fileStructure.trim();
+  if (fsBody) {
+    const fsBudget = taskHintsFileStructure(task) ? 5_000 : 3_200;
+    let fsExcerpt = excerptByKeywords(fsBody, keywords, fsBudget);
+    if (fsExcerpt.length < 400 && fsBody.length > fsExcerpt.length) {
+      fsExcerpt = fsBody.slice(0, Math.min(fsBudget, fsBody.length));
+    }
+    excerptScoreSum += scoreBlock(fsExcerpt, keywords);
+    parts.push(`## FILE_STRUCTURE.md (excerpts)`);
+    parts.push(fsExcerpt);
+    parts.push("");
+    excerptBodyLen += fsExcerpt.length;
   }
 
   let markdown = parts.join("\n").trim();

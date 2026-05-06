@@ -24,7 +24,6 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 const DEFAULT_SETTINGS: FeatureSettings = {
-  modelProfile: "balanced",
   enableBrowserTools: false,
   enableCodeExecution: false,
   enableMcp: false,

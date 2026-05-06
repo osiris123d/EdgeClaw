@@ -9257,6 +9257,342 @@ textarea {
   padding: 12px 0;
 }
 
+/* Orchestration console (SubAgents › Orchestration) */
+.coord-page .orch-health-bar {
+  align-items: stretch;
+}
+
+.coord-page .orch-health-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  padding: 0;
+  min-width: 140px;
+  flex: 1 1 140px;
+}
+
+.coord-page .orch-health-card.orch-health-error {
+  border-color: rgba(184, 64, 64, 0.45);
+  background: rgba(184, 64, 64, 0.06);
+}
+
+.coord-page .orch-health-card.orch-health-degraded {
+  border-color: rgba(200, 140, 60, 0.4);
+  background: rgba(200, 140, 60, 0.06);
+}
+
+.coord-page .orch-health-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.coord-page .orch-health-summary::-webkit-details-marker {
+  display: none;
+}
+
+.coord-page .orch-health-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.coord-page .orch-health-pill {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  align-self: flex-start;
+  border: 1px solid var(--border-soft);
+}
+
+.coord-page .orch-health-pill-healthy {
+  background: rgba(94, 170, 124, 0.15);
+  border-color: rgba(94, 170, 124, 0.4);
+}
+
+.coord-page .orch-health-pill-degraded {
+  background: rgba(200, 140, 60, 0.12);
+  border-color: rgba(200, 140, 60, 0.35);
+}
+
+.coord-page .orch-health-pill-error {
+  background: rgba(184, 64, 64, 0.12);
+  border-color: rgba(184, 64, 64, 0.45);
+}
+
+.coord-page .orch-health-body {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.coord-page .orch-health-dl {
+  margin: 8px 0 0;
+}
+
+.coord-page .orch-health-refresh {
+  display: flex;
+  align-items: flex-start;
+  padding-top: 8px;
+}
+
+.coord-page .orch-console .orch-run-panel {
+  border-color: var(--border-soft);
+}
+
+.coord-page .orch-flow-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.coord-page .orch-flow-arrow {
+  opacity: 0.65;
+  font-weight: 400;
+}
+
+.coord-page .orch-run-desc {
+  margin-top: 0;
+}
+
+.coord-page .orch-run-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 14px 18px;
+  margin: 12px 0;
+}
+
+.coord-page .orch-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.coord-page .orch-field-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.coord-page .orch-field-narrow {
+  max-width: 220px;
+}
+
+.coord-page .orch-field-full {
+  grid-column: 1 / -1;
+}
+
+.coord-page .orch-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 16px;
+}
+
+.coord-page .orch-preset-label {
+  font-size: 13px;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
+.coord-page .orch-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.coord-page .orch-settings-details summary,
+.coord-page .orch-diagnostics-details summary,
+.coord-page .orch-debug-overrides-details summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.coord-page .orch-results-panel {
+  position: sticky;
+  top: 8px;
+  z-index: 4;
+  scroll-margin-top: 16px;
+  background: var(--surface-1);
+  border-width: 1px;
+}
+
+.coord-page .orch-results-panel-active {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+}
+
+.coord-page .orch-results-highlight {
+  animation: orch-results-highlight-pulse 2.4s ease-out;
+}
+
+@keyframes orch-results-highlight-pulse {
+  0% {
+    border-color: var(--accent, #c96);
+    box-shadow: 0 0 0 0 rgba(204, 153, 102, 0.55), 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+  35% {
+    border-color: rgba(204, 153, 102, 0.95);
+    box-shadow: 0 0 0 5px rgba(204, 153, 102, 0.22), 0 10px 28px rgba(0, 0, 0, 0.08);
+  }
+  100% {
+    border-color: var(--border-soft);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coord-page .orch-results-highlight {
+    animation: none;
+    outline: 2px solid rgba(204, 153, 102, 0.85);
+    outline-offset: 2px;
+  }
+}
+
+.coord-page .orch-results-cta {
+  margin-top: 6px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.coord-page .orch-settings-lede {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+
+.coord-page .orch-debug-overrides-details {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-soft);
+}
+
+.coord-page .orch-debug-overrides-body {
+  padding-top: 10px;
+  padding-left: 4px;
+  border-left: 3px solid rgba(200, 140, 60, 0.35);
+  margin-left: 2px;
+}
+
+.coord-page .orch-debug-overrides-warning {
+  margin-top: 0;
+}
+
+.coord-page .orch-check-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.coord-page .orch-check-inline {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.coord-page .orch-check-hint {
+  margin-left: 26px;
+  display: block;
+  line-height: 1.4;
+}
+
+.coord-page .orch-settings-body,
+.coord-page .orch-diagnostics-body {
+  padding-top: 12px;
+}
+
+.coord-page .orch-settings-divider {
+  height: 1px;
+  background: var(--border-soft);
+  margin: 14px 0;
+}
+
+.coord-page .orch-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 14px;
+}
+
+.coord-page .orch-results-panel .orch-result-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 10px;
+}
+
+.coord-page .orch-result-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+}
+
+.coord-page .orch-result-success {
+  background: rgba(94, 170, 124, 0.15);
+  border-color: rgba(94, 170, 124, 0.4);
+}
+
+.coord-page .orch-result-blocked {
+  background: rgba(184, 64, 64, 0.1);
+  border-color: rgba(184, 64, 64, 0.35);
+}
+
+.coord-page .orch-result-review {
+  background: rgba(80, 120, 200, 0.12);
+  border-color: rgba(80, 120, 200, 0.35);
+}
+
+.coord-page .orch-result-error {
+  background: rgba(184, 64, 64, 0.14);
+  border-color: rgba(184, 64, 64, 0.45);
+}
+
+.coord-page .orch-result-followups {
+  background: rgba(140, 90, 200, 0.12);
+  border-color: rgba(140, 90, 200, 0.35);
+}
+
+.coord-page .orch-result-neutral {
+  background: var(--surface-0);
+}
+
+.coord-page .orch-timeline {
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-0);
+  border: 1px solid var(--border-soft);
+  margin: 0 0 10px;
+}
+
+.coord-page .orch-raw-json {
+  margin-top: 12px;
+}
+
+.coord-page .orch-raw-json summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.coord-page .orch-diagnostics-subtitle {
+  margin: 16px 0 8px;
+  font-size: 14px;
+}
+
 .coord-section-stack {
   display: flex;
   flex-direction: column;
@@ -9528,11 +9864,6 @@ textarea {
 .coord-json-pre {
   max-height: 420px;
   overflow: auto;
-}
-
-.coord-footer-note {
-  margin-top: 24px;
-  font-size: 13px;
 }
 
 .coord-rpc-c-flag {

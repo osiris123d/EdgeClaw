@@ -1479,17 +1479,6 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
 
         <div className="settings-grid">
           <label>
-            <span>Model profile</span>
-            <select
-              value={settings.modelProfile}
-              onChange={(e) => set("modelProfile", e.target.value as FeatureSettings["modelProfile"])}
-            >
-              <option value="balanced">Balanced</option>
-              <option value="quality">Quality</option>
-              <option value="speed">Speed</option>
-            </select>
-          </label>
-          <label>
             <span>Observability level</span>
             <select
               value={settings.observabilityLevel}
@@ -1509,7 +1498,7 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
           <label>
             <input type="checkbox" checked={settings.enableBrowserTools}
               onChange={(e) => set("enableBrowserTools", e.target.checked)} />
-            Enable browser tools
+            Enable browser tools (main chat)
           </label>
           <label>
             <input type="checkbox" checked={settings.enableCodeExecution}
@@ -1549,8 +1538,9 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
             <div>
               <h3 className="settings-card-title">Browser automation</h3>
               <p className="settings-card-desc muted">
-                Controls which backend executes browser actions. CDP is the default and
-                production-tested path. Puppeteer requires browser tools to be enabled.
+                <strong>Main Chat</strong> only: when off, browser_search / browser_execute / browser_session are
+                hidden there (your worker keeps <code>ENABLE_BROWSER_TOOLS</code> bindings).{" "}
+                <strong>Agent Browsing</strong> (dedicated page) always has browser tools regardless of this checkbox.
               </p>
             </div>
           </div>

@@ -77,6 +77,131 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+export interface CoordinatorFinalizeResponse {
+  ok: boolean;
+  readiness: { ok: boolean; reasons: string[] };
+  manifest: Record<string, unknown>;
+  sharedProjectId?: string;
+  manifestPersistPath: string | null;
+}
+
+/** Review-only: builds a promotion-prep manifest from applied patches + blueprint docs (never deploys). */
+export async function postCoordinatorProjectFinalize(
+  projectId: string,
+  body: { persistManifest: boolean; operatorAcknowledgesHumanReviewRequired: boolean },
+  signal?: AbortSignal
+): Promise<CoordinatorFinalizeResponse> {
+  return requestJson(`/api/coordinator/projects/${encodeURIComponent(projectId)}/finalize`, {
+    method: "POST",
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+/** Prefix remap for materialized paths (e.g. `staging/` → `db/`). */
+export interface CoordinatorPathMappingRule {
+  fromPrefix: string;
+  toPrefix: string;
+  /** Exact full-path match when true (server-side materialize). */
+  exact?: boolean;
+}
+
+/** Built-in mapping modes for materialize (server resolves to concrete rules). */
+export type CoordinatorMaterializeMappingPreset = "none" | "simple_staging" | "team_task_tracker";
+
+export interface CoordinatorMaterializePreviewRow {
+  sourcePath: string;
+  destinationPath: string;
+  patchId: string;
+  status: "applied" | "conflict" | "skipped";
+  detail?: string;
+}
+
+export interface CoordinatorMaterializeReportPayload {
+  generatedAt: string;
+  mapping: { preset: string; rules: CoordinatorPathMappingRule[] };
+  previewRows: CoordinatorMaterializePreviewRow[];
+  conflicts: Array<{ patchId: string; path: string; detail: string }>;
+  skipped: Array<{ patchId: string; path?: string; reason: string }>;
+  patchCount: number;
+  fileCount: number;
+}
+
+export interface CoordinatorMaterializePreviewResponse extends CoordinatorMaterializeReportPayload {
+  ok: true;
+  sharedProjectId: string;
+  format: "preview";
+}
+
+export interface CoordinatorMaterializeJsonResponse extends CoordinatorMaterializeReportPayload {
+  ok: true;
+  sharedProjectId: string;
+  format: "json";
+  files: Record<string, string>;
+}
+
+export async function postCoordinatorProjectMaterializePreview(
+  projectId: string,
+  body: { mappingPreset?: CoordinatorMaterializeMappingPreset },
+  signal?: AbortSignal
+): Promise<CoordinatorMaterializePreviewResponse> {
+  return requestJson(`/api/coordinator/projects/${encodeURIComponent(projectId)}/materialize`, {
+    method: "POST",
+    body: JSON.stringify({ format: "preview", mappingPreset: body.mappingPreset ?? "none" }),
+    signal,
+  });
+}
+
+/** Reconstruct applied patches into a ZIP (stored mode). Includes `MATERIALIZE_REPORT.json`. */
+export async function postCoordinatorProjectMaterializeZip(
+  projectId: string,
+  body: { mappingPreset?: CoordinatorMaterializeMappingPreset; pathMappings?: CoordinatorPathMappingRule[] },
+  signal?: AbortSignal
+): Promise<Blob> {
+  const res = await fetch(`/api/coordinator/projects/${encodeURIComponent(projectId)}/materialize`, {
+    method: "POST",
+    headers: {
+      Accept: "application/zip",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      format: "zip",
+      mappingPreset: body.mappingPreset ?? "none",
+      ...(body.pathMappings?.length ? { pathMappings: body.pathMappings } : {}),
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    let err = text || res.statusText;
+    try {
+      const j = JSON.parse(text) as { error?: unknown };
+      if (j && typeof j.error === "string" && j.error.trim()) err = j.error.trim();
+    } catch {
+      /* keep text */
+    }
+    throw new Error(`[coordinatorControlPlaneApi] ${res.status} — ${err}`);
+  }
+  return res.blob();
+}
+
+/** Same merge as ZIP but returns paths → contents + conflict report (no binary files). */
+export async function postCoordinatorProjectMaterializeJson(
+  projectId: string,
+  body: { mappingPreset?: CoordinatorMaterializeMappingPreset; pathMappings?: CoordinatorPathMappingRule[] },
+  signal?: AbortSignal
+): Promise<CoordinatorMaterializeJsonResponse> {
+  return requestJson(`/api/coordinator/projects/${encodeURIComponent(projectId)}/materialize`, {
+    method: "POST",
+    body: JSON.stringify({
+      format: "json",
+      mappingPreset: body.mappingPreset ?? "none",
+      ...(body.pathMappings?.length ? { pathMappings: body.pathMappings } : {}),
+    }),
+    signal,
+  });
+}
+
 export async function getCoordinatorHealth(signal?: AbortSignal): Promise<CoordinatorHealthResponse> {
   return requestJson<CoordinatorHealthResponse>("/api/coordinator/health", { signal });
 }

@@ -1,4 +1,5 @@
 import type { Env } from "../lib/env";
+import { DEBUG_PROJECT_AUTONOMY_FORWARDED_QUERY_HEADER } from "./projectAutonomyHttp.shared";
 
 /**
  * Forward `/api/debug/project-autonomy` → MainAgent DO `/debug/project-autonomy`.
@@ -36,6 +37,13 @@ export async function forwardToAgentDebugProjectAutonomy(
   const hasBody = request.body !== null && method === "POST";
 
   const outgoingHeaders = new Headers();
+  const forwardedQuery =
+    url.search.length > 0 && url.search.startsWith("?")
+      ? url.search.slice(1)
+      : url.searchParams.toString();
+  if (forwardedQuery !== "") {
+    outgoingHeaders.set(DEBUG_PROJECT_AUTONOMY_FORWARDED_QUERY_HEADER, forwardedQuery);
+  }
   let body: ArrayBuffer | undefined;
   if (hasBody) {
     body = await request.arrayBuffer();
@@ -55,7 +63,13 @@ export async function forwardToAgentDebugProjectAutonomy(
 
   console.info(
     "debug_project_autonomy_stub_fetch_start",
-    JSON.stringify({ session, method, path: doUrl.pathname })
+    JSON.stringify({
+      session,
+      method,
+      path: doUrl.pathname,
+      doHref: doUrl.href,
+      forwardedQueryLen: forwardedQuery.length,
+    })
   );
 
   try {

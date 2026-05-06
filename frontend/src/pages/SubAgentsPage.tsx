@@ -13,12 +13,21 @@ import {
   listCoordinatorTasks,
   patchCoordinatorProject,
   postCoordinatorBlueprintTemplates,
+  postCoordinatorProjectFinalize,
+  postCoordinatorProjectMaterializeJson,
+  postCoordinatorProjectMaterializePreview,
+  postCoordinatorProjectMaterializeZip,
   postImportCoordinatorRoadmap,
 } from "../lib/coordinatorControlPlaneApi";
 import { CoordinatorReviewPanel } from "../components/coordinator/CoordinatorReviewPanel";
 import { EditCoordinatorTaskDialog } from "../components/coordinator/EditCoordinatorTaskDialog";
 import { ProjectBlueprintDialog } from "../components/coordinator/ProjectBlueprintDialog";
-import type { CoordinatorAiGatewayRunLogsResponse, CoordinatorHealthResponse } from "../lib/coordinatorControlPlaneApi";
+import type {
+  CoordinatorAiGatewayRunLogsResponse,
+  CoordinatorHealthResponse,
+  CoordinatorMaterializeMappingPreset,
+  CoordinatorMaterializePreviewResponse,
+} from "../lib/coordinatorControlPlaneApi";
 import type {
   CoordinatorProject,
   CoordinatorRun,
@@ -28,8 +37,20 @@ import type {
   CoordinatorTask,
 } from "../types/coordinatorControlPlane";
 import { BLUEPRINT_FILE_KEYS } from "../types/coordinatorControlPlane";
+import { OrchestrationSystemHealthBar } from "../components/orchestration/OrchestrationSystemHealthBar";
+import {
+  OrchestrationConsoleTab,
+  type OrchestrationPresetId,
+} from "../components/orchestration/OrchestrationConsoleTab";
+import {
+  buildProjectAutonomySearchParams,
+  httpOrchestrationModeFromPrimary,
+  stopsFromExecutionMode,
+  type ExecutionStopMode,
+  type PrimaryRunMode,
+} from "../components/orchestration/projectAutonomyQuery";
 
-type TabId = "overview" | "monitor" | "registry" | "runs" | "debug";
+type TabId = "overview" | "monitor" | "registry" | "runs" | "orchestration";
 type MonitorSubTab = "sessions" | "agents" | "timeline" | "projects" | "review";
 
 interface Banner {
@@ -253,17 +274,26 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
   const [runsLoading, setRunsLoading] = useState(false);
   const [banner, setBanner] = useState<Banner | null>(null);
   const [debugToken, setDebugToken] = useState("");
-  const [debugOrchMode, setDebugOrchMode] = useState<"success" | "fail_revise">("success");
+  const [primaryRunMode, setPrimaryRunMode] = useState<PrimaryRunMode>("success");
+  const [executionStopMode, setExecutionStopMode] = useState<ExecutionStopMode>("completion");
+  const [autonomyBatchMaxSteps, setAutonomyBatchMaxSteps] = useState(3);
   const [debugChildStateless, setDebugChildStateless] = useState(false);
   const [debugNoSharedTools, setDebugNoSharedTools] = useState(false);
-  const [autonomyStopOnReview, setAutonomyStopOnReview] = useState(true);
-  const [autonomyStopOnBlocked, setAutonomyStopOnBlocked] = useState(true);
-  const [autonomyStopOnFollowUp, setAutonomyStopOnFollowUp] = useState(true);
+  const [orchCodingLoopMaxIterations, setOrchCodingLoopMaxIterations] = useState("");
   const [debugAttachControlPlaneProject, setDebugAttachControlPlaneProject] = useState(true);
   const [selectedOrchestrationTaskId, setSelectedOrchestrationTaskId] = useState<string | null>(null);
   const [minimalChildStateless, setMinimalChildStateless] = useState(false);
   const [debugBusy, setDebugBusy] = useState(false);
   const [debugResult, setDebugResult] = useState<string | null>(null);
+  const [finalizeAckHumanReview, setFinalizeAckHumanReview] = useState(false);
+  const [finalizePersistManifest, setFinalizePersistManifest] = useState(false);
+  const [finalizeBusy, setFinalizeBusy] = useState(false);
+  const [finalizeResult, setFinalizeResult] = useState<string | null>(null);
+  const [materializeBusy, setMaterializeBusy] = useState(false);
+  const [materializePreviewBusy, setMaterializePreviewBusy] = useState(false);
+  const [materializeMappingPreset, setMaterializeMappingPreset] =
+    useState<CoordinatorMaterializeMappingPreset>("none");
+  const [materializePreview, setMaterializePreview] = useState<CoordinatorMaterializePreviewResponse | null>(null);
   const [blueprintDialogOpen, setBlueprintDialogOpen] = useState(false);
   const [blueprintDialogMode, setBlueprintDialogMode] = useState<"create" | "edit">("create");
   const [taskBeingEdited, setTaskBeingEdited] = useState<CoordinatorTask | null>(null);
@@ -393,7 +423,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     const slug = proj.projectSlug;
 
     try {
-      appendBootstrapLog("Step 1/4 — Generate blueprint templates (all six docs + fingerprints)…");
+      appendBootstrapLog("Step 1/4 — Generate blueprint templates (all docs + fingerprints, schema v2 includes FILE_STRUCTURE.md)…");
       const { blueprint } = await postCoordinatorBlueprintTemplates({
         projectName: name,
         projectSlug: slug,
@@ -440,15 +470,17 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
           setDebugBusy(true);
           setDebugResult(null);
           try {
-            const q = new URLSearchParams({
-              session: sessionId,
+            const q = buildProjectAutonomySearchParams({
+              sessionId,
               projectId: pid,
-              maxSteps: "1",
-              mode: debugOrchMode,
+              maxSteps: 1,
+              mode: httpOrchestrationModeFromPrimary(primaryRunMode),
+              stops: stopsFromExecutionMode(executionStopMode),
+              debugChildStateless,
+              debugNoSharedTools,
+              selectedOrchestrationTaskId: null,
+              orchCodingLoopMaxIterations,
             });
-            q.set("stopOnReview", autonomyStopOnReview ? "true" : "false");
-            q.set("stopOnBlocked", autonomyStopOnBlocked ? "true" : "false");
-            q.set("stopOnFollowUpTasks", autonomyStopOnFollowUp ? "true" : "false");
             const headers: Record<string, string> = { Accept: "application/json" };
             const tok = debugToken.trim();
             if (tok) headers.Authorization = `Bearer ${tok}`;
@@ -489,7 +521,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       await loadRegistry();
       flash(
         autonomyFailed
-          ? "Bootstrap finished; autonomy step failed — see log and Debug › Last result."
+          ? "Bootstrap finished; autonomy step failed — see log and Orchestration › Run results."
           : "Bootstrap finished — see log below.",
         autonomyFailed ? "error" : "success"
       );
@@ -507,11 +539,12 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     health,
     bootstrapRunFirstTask,
     sessionId,
-    debugOrchMode,
     debugToken,
-    autonomyStopOnReview,
-    autonomyStopOnBlocked,
-    autonomyStopOnFollowUp,
+    primaryRunMode,
+    executionStopMode,
+    debugChildStateless,
+    debugNoSharedTools,
+    orchCodingLoopMaxIterations,
     appendBootstrapLog,
     loadRegistry,
     loadTasks,
@@ -614,12 +647,16 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
   }, [tab, storageAvailable, projects]);
 
   useEffect(() => {
-    if ((tab === "registry" || tab === "debug") && selectedProjectId) void loadTasks(selectedProjectId);
+    if ((tab === "registry" || tab === "orchestration") && selectedProjectId) void loadTasks(selectedProjectId);
   }, [tab, selectedProjectId, loadTasks]);
 
   useEffect(() => {
     setSelectedOrchestrationTaskId(null);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    setMaterializePreview(null);
+  }, [materializeMappingPreset, selectedProjectId]);
 
   useEffect(
     () => () => {
@@ -662,8 +699,10 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       try {
         const q = new URLSearchParams({ session: sessionId });
         if (path === "orchestrate") {
-          q.set("mode", mode ?? debugOrchMode);
-          if (debugChildStateless) q.set("childTurn", "stateless");
+          q.set("mode", mode ?? httpOrchestrationModeFromPrimary(primaryRunMode));
+          if (debugChildStateless) {
+            q.set("childTurn", "stateless");
+          }
           if (debugNoSharedTools) q.set("noSharedTools", "true");
           if (debugAttachControlPlaneProject && selectedProjectId) {
             const sp = projects.find((x) => x.projectId === selectedProjectId);
@@ -729,7 +768,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     [
       sessionId,
       debugToken,
-      debugOrchMode,
+      primaryRunMode,
       debugChildStateless,
       debugNoSharedTools,
       storageAvailable,
@@ -758,10 +797,12 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
         projectId?: string;
         taskId?: string;
         sessionId?: string;
-      } = { mode: debugOrchMode, sessionId };
+      } = { mode: httpOrchestrationModeFromPrimary(primaryRunMode), sessionId };
       const t = debugToken.trim();
       if (t) payload.debugOrchestrationToken = t;
-      if (debugChildStateless) payload.childTurn = "stateless";
+      if (debugChildStateless) {
+        payload.childTurn = "stateless";
+      }
       if (debugNoSharedTools) payload.noSharedTools = true;
       if (debugAttachControlPlaneProject && selectedProjectId) {
         const sp = projects.find((x) => x.projectId === selectedProjectId);
@@ -783,7 +824,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       setDebugBusy(false);
     }
   }, [
-    debugOrchMode,
+    primaryRunMode,
     debugToken,
     debugChildStateless,
     debugNoSharedTools,
@@ -840,16 +881,6 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     [rpcStatus, debugToken, flash, minimalChildStateless]
   );
 
-  const healthCards = useMemo(() => {
-    if (!health) return [];
-    return [
-      { label: "Coordinator binding", ok: health.subagentCoordinatorBindingPresent },
-      { label: "Debug orchestration HTTP", ok: health.debugOrchestrationEndpointEnabled },
-      { label: "Shared workspace KV", ok: health.sharedWorkspaceKvPresent },
-      { label: "Control-plane KV", ok: health.controlPlaneKvPresent },
-    ];
-  }, [health]);
-
   const selectedProject = projects.find((p) => p.projectId === selectedProjectId) ?? null;
 
   const openRunReview = useCallback((runId: string) => {
@@ -903,7 +934,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     !selectedProjectId || !selectedProject || selectedProject.readiness !== "ready";
 
   const runProjectAutonomyHttp = useCallback(
-    async (maxSteps: 1 | 3) => {
+    async (maxSteps: number) => {
       setDebugBusy(true);
       setDebugResult(null);
       try {
@@ -911,15 +942,17 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
           flash("Select a registry project with readiness ready.", "error");
           return;
         }
-        const q = new URLSearchParams({
-          session: sessionId,
+        const q = buildProjectAutonomySearchParams({
+          sessionId,
           projectId: selectedProjectId,
-          maxSteps: String(maxSteps),
-          mode: debugOrchMode,
+          maxSteps,
+          mode: httpOrchestrationModeFromPrimary(primaryRunMode),
+          stops: stopsFromExecutionMode(executionStopMode),
+          debugChildStateless,
+          debugNoSharedTools,
+          selectedOrchestrationTaskId,
+          orchCodingLoopMaxIterations,
         });
-        q.set("stopOnReview", autonomyStopOnReview ? "true" : "false");
-        q.set("stopOnBlocked", autonomyStopOnBlocked ? "true" : "false");
-        q.set("stopOnFollowUpTasks", autonomyStopOnFollowUp ? "true" : "false");
         const headers: Record<string, string> = { Accept: "application/json" };
         const t = debugToken.trim();
         if (t) headers.Authorization = `Bearer ${t}`;
@@ -956,17 +989,169 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
     [
       sessionId,
       debugToken,
-      debugOrchMode,
+      primaryRunMode,
+      executionStopMode,
       selectedProjectId,
       selectedProject,
-      autonomyStopOnReview,
-      autonomyStopOnBlocked,
-      autonomyStopOnFollowUp,
+      selectedOrchestrationTaskId,
+      debugChildStateless,
+      debugNoSharedTools,
+      orchCodingLoopMaxIterations,
       storageAvailable,
       flash,
       loadTasks,
     ]
   );
+
+  const runFinalizeProject = useCallback(async () => {
+    if (!selectedProjectId?.trim()) {
+      flash("Select a project first.", "error");
+      return;
+    }
+    if (!finalizeAckHumanReview) {
+      flash("Confirm the human-review acknowledgement checkbox.", "error");
+      return;
+    }
+    setFinalizeBusy(true);
+    try {
+      const out = await postCoordinatorProjectFinalize(selectedProjectId.trim(), {
+        persistManifest: finalizePersistManifest,
+        operatorAcknowledgesHumanReviewRequired: true,
+      });
+      setFinalizeResult(JSON.stringify(out, null, 2));
+      if (out.ok) {
+        flash("Finalize manifest generated — review JSON before any promotion.", "success");
+      } else {
+        flash(`Finalize checklist failed (${out.readiness.reasons.length} issue(s)) — see response JSON.`, "error");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setFinalizeResult(msg);
+      flash(msg, "error");
+    } finally {
+      setFinalizeBusy(false);
+    }
+  }, [
+    selectedProjectId,
+    finalizeAckHumanReview,
+    finalizePersistManifest,
+    flash,
+  ]);
+
+  const runMaterializePreview = useCallback(async () => {
+    if (!selectedProjectId?.trim()) {
+      flash("Select a project first.", "error");
+      return;
+    }
+    setMaterializePreviewBusy(true);
+    try {
+      const out = await postCoordinatorProjectMaterializePreview(selectedProjectId.trim(), {
+        mappingPreset: materializeMappingPreset,
+      });
+      setMaterializePreview(out);
+      flash(`Preview loaded (${out.previewRows.length} row(s); preset ${out.mapping.preset}).`, "success");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), "error");
+      setMaterializePreview(null);
+    } finally {
+      setMaterializePreviewBusy(false);
+    }
+  }, [selectedProjectId, materializeMappingPreset, flash]);
+
+  const runMaterializeProjectZip = useCallback(async () => {
+    if (!selectedProjectId?.trim()) {
+      flash("Select a project first.", "error");
+      return;
+    }
+    const proj = projects.find((p) => p.projectId === selectedProjectId) ?? null;
+    setMaterializeBusy(true);
+    try {
+      const blob = await postCoordinatorProjectMaterializeZip(selectedProjectId.trim(), {
+        mappingPreset: materializeMappingPreset,
+      });
+      const slug =
+        proj?.projectSlug?.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "project";
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${slug}-materialized.zip`;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      flash("ZIP downloaded — open MATERIALIZE_REPORT.json inside the archive for conflicts/skips.", "success");
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setMaterializeBusy(false);
+    }
+  }, [selectedProjectId, projects, materializeMappingPreset, flash]);
+
+  const runMaterializeProjectJson = useCallback(async () => {
+    if (!selectedProjectId?.trim()) {
+      flash("Select a project first.", "error");
+      return;
+    }
+    const proj = projects.find((p) => p.projectId === selectedProjectId) ?? null;
+    setMaterializeBusy(true);
+    try {
+      const out = await postCoordinatorProjectMaterializeJson(selectedProjectId.trim(), {
+        mappingPreset: materializeMappingPreset,
+      });
+      const slug =
+        proj?.projectSlug?.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "project";
+      const blob = new Blob([`${JSON.stringify(out, null, 2)}\n`], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `${slug}-materialized.json`;
+        a.rel = "noopener";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      flash(
+        `JSON export downloaded (${out.fileCount} files; ${out.conflicts.length} conflicts; ${out.skipped.length} skips).`,
+        "success"
+      );
+    } catch (e) {
+      flash(e instanceof Error ? e.message : String(e), "error");
+    } finally {
+      setMaterializeBusy(false);
+    }
+  }, [selectedProjectId, projects, materializeMappingPreset, flash]);
+
+  const applyOrchestrationPreset = useCallback((id: OrchestrationPresetId) => {
+    switch (id) {
+      case "run_normal":
+        setPrimaryRunMode("success");
+        setExecutionStopMode("completion");
+        setDebugChildStateless(false);
+        setDebugNoSharedTools(false);
+        setOrchCodingLoopMaxIterations("");
+        setAutonomyBatchMaxSteps(3);
+        break;
+      case "single_step":
+        setPrimaryRunMode("success");
+        setExecutionStopMode("single_step");
+        setAutonomyBatchMaxSteps(1);
+        break;
+      case "batch_three":
+        setPrimaryRunMode("success");
+        setExecutionStopMode("completion");
+        setAutonomyBatchMaxSteps(3);
+        break;
+      default:
+        break;
+    }
+  }, []);
 
   const overviewControlMetrics = useMemo(() => {
     const taskByStatus: Record<string, number> = {};
@@ -1090,14 +1275,9 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
         <div className="page-header-main">
           <h2>Sub-Agents</h2>
           <p className="subhead">
-            Coordinator control plane — health, registry, run history, and debug probes. Chat stays on{" "}
-            <strong>Chat</strong>; this page is for operators.
+            Coordinator control plane — system health, project registry, run history, and the orchestration console.
+            Chat stays on <strong>Chat</strong>; this page is for operators.
           </p>
-        </div>
-        <div className="page-header-actions" style={{ display: "flex", gap: 8 }}>
-          <button type="button" className="btn-header-secondary" onClick={() => void loadHealth()}>
-            {healthLoading ? "Refreshing…" : "Refresh health"}
-          </button>
         </div>
       </header>
 
@@ -1110,26 +1290,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
         </div>
       )}
 
-      <div className="coord-stats-bar" aria-label="Coordinator overview">
-        {healthLoading && !health ? (
-          <div className="coord-stats-skeleton muted">Loading health…</div>
-        ) : health ? (
-          <>
-            {healthCards.map((c) => (
-              <div key={c.label} className={`coord-stat-card${c.ok ? " is-ok" : " is-warn"}`}>
-                <span className="coord-stat-label">{c.label}</span>
-                <span className="coord-stat-value">{c.ok ? "Yes" : "No"}</span>
-              </div>
-            ))}
-            <div className="coord-stat-card">
-              <span className="coord-stat-label">Environment</span>
-              <span className="coord-stat-value">{health.environmentName}</span>
-            </div>
-          </>
-        ) : (
-          <div className="coord-stats-skeleton muted">Health unavailable</div>
-        )}
-      </div>
+      <OrchestrationSystemHealthBar health={health} healthLoading={healthLoading} onRefresh={loadHealth} />
 
       <div className="memory-tab-bar" role="tablist" aria-label="Sub-agents sections">
         {(
@@ -1138,7 +1299,7 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       ["monitor", "Monitor"],
       ["registry", "Projects & tasks"],
       ["runs", "Runs"],
-      ["debug", "Debug & smoke"],
+      ["orchestration", "Orchestration"],
     ] as const
         ).map(([id, label]) => (
           <button
@@ -1773,11 +1934,11 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
             <div className="coord-bootstrap-operator">
               <h4 className="coord-bootstrap-title">Bootstrap project</h4>
               <p className="muted coord-bootstrap-help">
-                One shot: generate the six blueprint templates (same as{" "}
+                One shot: generate the standard blueprint templates including <code>FILE_STRUCTURE.md</code> (same as{" "}
                 <code>POST /api/coordinator/blueprint-templates</code>), <code>PATCH</code> them onto this project,
                 import <code>ROADMAP.md</code> into tasks, reload readiness, then optionally run a single bounded
-                autonomy step (<code>GET /api/debug/project-autonomy?maxSteps=1</code> — uses Debug token and stop
-                flags below). Progress appears here; banners toast success or failure.
+                autonomy step (<code>GET /api/debug/project-autonomy?maxSteps=1</code> — uses orchestration token and
+                execution settings on the Orchestration tab). Progress appears here; banners toast success or failure.
               </p>
               <div className="coord-bootstrap-actions">
                 <label className="coord-bootstrap-checkbox">
@@ -1787,8 +1948,8 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
                     onChange={(e) => setBootstrapRunFirstTask(e.target.checked)}
                     disabled={bootstrapBusy}
                   />
-                  After import, if readiness is <strong>ready</strong> and the debug autonomy endpoint is enabled,
-                  run <strong>one</strong> coordinator step (see Debug › Last result).
+                  After import, if readiness is <strong>ready</strong> and the orchestration HTTP route is enabled,
+                  run <strong>one</strong> coordinator step (see Orchestration › Run results).
                 </label>
                 <button
                   type="button"
@@ -2039,7 +2200,8 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
           {!storageAvailable ? (
             <p className="muted">
               Runs are stored when <code>COORDINATOR_CONTROL_PLANE_KV</code> is bound. Successful HTTP orchestrate
-              responses from the Debug tab can append a run when storage is available.
+              responses from orchestration / diagnostics HTTP probes on this page can append a run when storage is
+              available.
             </p>
           ) : null}
           {runs.length === 0 ? (
@@ -2286,347 +2448,67 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
         </section>
       )}
 
-      {tab === "debug" && (
-        <div className="coord-section-stack">
-          <section className="coord-panel">
-            <h3 className="coord-panel-title">HTTP debug probes</h3>
-            <p className="muted">
-              Same endpoints as Chat → Debug panel. Requires <code>ENABLE_DEBUG_ORCHESTRATION_ENDPOINT=true</code> and
-              optional Bearer token.
-            </p>
-            <div className="coord-debug-row">
-              <input
-                type="password"
-                autoComplete="off"
-                placeholder="DEBUG_ORCHESTRATION_TOKEN if set"
-                value={debugToken}
-                onChange={(e) => setDebugToken(e.target.value)}
-                disabled={debugBusy}
-                className="debug-orch-token-input"
-              />
-              <label className="coord-inline-label">
-                Mode{" "}
-                <select
-                  value={debugOrchMode}
-                  onChange={(e) => setDebugOrchMode(e.target.value as "success" | "fail_revise")}
-                  disabled={debugBusy}
-                >
-                  <option value="success">success</option>
-                  <option value="fail_revise">fail_revise</option>
-                </select>
-              </label>
-            </div>
-            <div className="coord-debug-flags">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={debugChildStateless}
-                  onChange={(e) => setDebugChildStateless(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                Child turn stateless
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={debugNoSharedTools}
-                  onChange={(e) => setDebugNoSharedTools(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                No shared workspace tools
-              </label>
-            </div>
-            <div className="coord-debug-project-attach muted">
-              <label className="coord-inline-label">
-                <input
-                  type="checkbox"
-                  checked={debugAttachControlPlaneProject}
-                  onChange={(e) => setDebugAttachControlPlaneProject(e.target.checked)}
-                  disabled={debugBusy || !storageAvailable}
-                />{" "}
-                Attach selected registry project blueprint to orchestrate (requires <strong>ready</strong> when a
-                project is selected)
-              </label>
-              <p className="small" style={{ marginTop: 6 }}>
-                {selectedProjectId && selectedProject ? (
-                  <>
-                    Selected: <strong>{projectDisplayName(selectedProject)}</strong> — readiness{" "}
-                    <span className={readinessBadgeClass(selectedProject.readiness)}>{selectedProject.readiness}</span>
-                    {orchestrateAttachBlocked ? (
-                      <span className="coord-badge coord-badge-warn" style={{ marginLeft: 8 }}>
-                        Orchestrate disabled until ready or uncheck attach
-                      </span>
-                    ) : null}
-                  </>
-                ) : (
-                  <>No project selected in Projects &amp; tasks — sandbox debug shared project id will be used.</>
-                )}
-              </p>
-              {debugAttachControlPlaneProject && selectedProject?.readiness === "ready" ? (
-                <div className="coord-debug-task-select" style={{ marginTop: 10 }}>
-                  <label className="coord-inline-label">
-                    Orchestration task (optional){" "}
-                    <select
-                      value={selectedOrchestrationTaskId ?? ""}
-                      onChange={(e) => {
-                        const v = e.target.value.trim();
-                        setSelectedOrchestrationTaskId(v ? v : null);
-                      }}
-                      disabled={debugBusy || !storageAvailable}
-                    >
-                      <option value="">— Project only (generic debug instructions) —</option>
-                      {tasks.map((t) => (
-                        <option key={t.taskId} value={t.taskId}>
-                          {t.title} ({t.status}
-                          {coordinatorTaskRunnableForOrchestration(t) ? "" : " — not runnable"})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {orchestrateTaskBlocksLaunch ? (
-                    <p className="small muted" style={{ marginTop: 6 }}>
-                      Select a task in <strong>todo</strong>, <strong>in_progress</strong>, or <strong>review</strong>,
-                      or clear the task to run project-only orchestration.
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            <div className="coord-debug-actions">
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || orchestrateLaunchBlocked}
-                title={
-                  orchestrateLaunchBlocked
-                    ? orchestrateTaskBlocksLaunch
-                      ? "Pick a runnable task (todo / in_progress / review) or clear the task selector."
-                      : "Select a ready project in Projects & tasks, or turn off blueprint attach."
-                    : undefined
-                }
-                onClick={() => void runDebugHttp("orchestrate", debugOrchMode)}
-              >
-                {debugBusy ? "Running…" : "HTTP orchestrate"}
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || orchestrateLaunchBlocked}
-                title={
-                  orchestrateLaunchBlocked
-                    ? orchestrateTaskBlocksLaunch
-                      ? "Pick a runnable task (todo / in_progress / review) or clear the task selector."
-                      : "Select a ready project in Projects & tasks, or turn off blueprint attach."
-                    : undefined
-                }
-                onClick={() => void runDebugHttp("orchestrate", "fail_revise")}
-              >
-                HTTP fail_revise
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy}
-                onClick={() => void runDebugHttp("coordinator-chain")}
-              >
-                Coordinator chain
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy}
-                onClick={() => void runDebugHttp("delegated-ping")}
-              >
-                Delegated ping
-              </button>
-            </div>
-            <p className="muted small">
-              Repro HTTP routes:{" "}
-              <code>/api/repro/subagent/agent-ping?session={sessionId}</code> and{" "}
-              <code>think-chat</code> (separate gate <code>ENABLE_SUBAGENT_REPRO_ENDPOINT</code>).
-            </p>
-          </section>
-
-          <section className="coord-panel">
-            <h3 className="coord-panel-title">Project autonomy (bounded)</h3>
-            <p className="muted">
-              Picks the next runnable <strong>todo</strong> task for the selected registry project (roadmap / manual
-              before generated; excludes dependency/blocker follow-ups), runs task-backed orchestration up to{" "}
-              <strong>N</strong> steps, then stops. Same debug gate and token as above. Results appear in{" "}
-              <strong>Last result</strong>.
-            </p>
-            <div className="coord-debug-flags">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={autonomyStopOnReview}
-                  onChange={(e) => setAutonomyStopOnReview(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                Stop on review (<code>needs_user_approval</code>)
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={autonomyStopOnBlocked}
-                  onChange={(e) => setAutonomyStopOnBlocked(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                Stop on blocked / failure terminal
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={autonomyStopOnFollowUp}
-                  onChange={(e) => setAutonomyStopOnFollowUp(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                Stop when follow-up tasks are generated
-              </label>
-            </div>
-            <p className="small muted" style={{ marginTop: 6 }}>
-              {selectedProjectId && selectedProject ? (
-                <>
-                  Project: <strong>{projectDisplayName(selectedProject)}</strong> — readiness{" "}
-                  <span className={readinessBadgeClass(selectedProject.readiness)}>{selectedProject.readiness}</span>
-                  {projectAutonomyBlocked ? (
-                    <span className="coord-badge coord-badge-warn" style={{ marginLeft: 8 }}>
-                      Autonomy needs a ready project
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <span className="muted">Select a project under Projects &amp; tasks.</span>
-              )}
-            </p>
-            <div className="coord-debug-actions">
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || projectAutonomyBlocked || !storageAvailable}
-                title={
-                  projectAutonomyBlocked
-                    ? "Pick a ready project in Projects & tasks."
-                    : !storageAvailable
-                      ? "Control-plane KV required for task registry."
-                      : undefined
-                }
-                onClick={() => void runProjectAutonomyHttp(1)}
-              >
-                {debugBusy ? "Running…" : "Run next task"}
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || projectAutonomyBlocked || !storageAvailable}
-                title={
-                  projectAutonomyBlocked
-                    ? "Pick a ready project in Projects & tasks."
-                    : !storageAvailable
-                      ? "Control-plane KV required for task registry."
-                      : undefined
-                }
-                onClick={() => void runProjectAutonomyHttp(3)}
-              >
-                Run next 3 tasks
-              </button>
-            </div>
-            <p className="muted small">
-              Read <strong>Last result</strong> for <code>stopReason</code> (e.g. <code>no_runnable_tasks</code>,{" "}
-              <code>blocked</code>, <code>review_required</code>, <code>follow_up_tasks_created</code>,{" "}
-              <code>max_steps_reached</code>, <code>project_complete_candidate</code>, <code>dependency_unmet</code>
-              ), <code>stepsExecuted</code>,{" "}
-              <code>steps</code>, and <code>totalFollowUpsCreated</code>. Server logs:{" "}
-              <code>project_autonomy_pick</code>, <code>project_autonomy_stop</code>, <code>project_autonomy_complete</code>.
-            </p>
-          </section>
-
-          <section className="coord-panel">
-            <h3 className="coord-panel-title">Agent RPC probes</h3>
-            <p className="muted">
-              Uses WebSocket to <code>{wsEndpoint}</code> — same session as Chat when session id matches.
-            </p>
-            <div className="coord-debug-actions">
-              {rpcStatus !== "connected" ? (
-                <button type="button" className="btn-primary" onClick={connectRpc}>
-                  Connect for RPC
-                </button>
-              ) : (
-                <button type="button" className="btn-header-secondary" onClick={disconnectRpc}>
-                  Disconnect
-                </button>
-              )}
-              <span className={`coord-rpc-pill coord-rpc-${rpcStatus}`}>RPC: {rpcStatus}</span>
-            </div>
-            <div className="coord-debug-actions">
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || rpcStatus !== "connected" || orchestrateLaunchBlocked}
-                title={
-                  orchestrateLaunchBlocked
-                    ? orchestrateTaskBlocksLaunch
-                      ? "Pick a runnable task (todo / in_progress / review) or clear the task selector."
-                      : "Select a ready project in Projects & tasks, or turn off blueprint attach."
-                    : undefined
-                }
-                onClick={() => void runRpcOrchestrate()}
-              >
-                RPC orchestrate
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || rpcStatus !== "connected"}
-                onClick={() => void runRpcProbe("a")}
-              >
-                A: Baseline child.chat
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || rpcStatus !== "connected"}
-                onClick={() => void runRpcProbe("b1")}
-              >
-                B1: Smoke delegateToCoder
-              </button>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || rpcStatus !== "connected"}
-                onClick={() => void runRpcProbe("c")}
-              >
-                C: Minimal delegateTo
-              </button>
-              <label className="coord-inline-label coord-rpc-c-flag">
-                <input
-                  type="checkbox"
-                  checked={minimalChildStateless}
-                  onChange={(e) => setMinimalChildStateless(e.target.checked)}
-                  disabled={debugBusy}
-                />{" "}
-                C stateless
-              </label>
-              <button
-                type="button"
-                className="btn-header-secondary"
-                disabled={debugBusy || rpcStatus !== "connected"}
-                onClick={() => void runRpcProbe("ping")}
-              >
-                Delegated rpcPing
-              </button>
-            </div>
-          </section>
-
-          {debugResult ? (
-            <section className="coord-panel">
-              <h3 className="coord-panel-title">Last result</h3>
-              <pre className="debug-orch-pre coord-json-pre" tabIndex={0}>
-                {debugResult}
-              </pre>
-            </section>
-          ) : null}
-        </div>
+      {tab === "orchestration" && (
+        <OrchestrationConsoleTab
+          sessionId={sessionId}
+          wsEndpoint={wsEndpoint}
+          storageAvailable={storageAvailable}
+          projects={projects}
+          selectedProjectId={selectedProjectId}
+          setSelectedProjectId={setSelectedProjectId}
+          selectedProject={selectedProject}
+          tasks={tasks}
+          selectedOrchestrationTaskId={selectedOrchestrationTaskId}
+          setSelectedOrchestrationTaskId={setSelectedOrchestrationTaskId}
+          primaryRunMode={primaryRunMode}
+          setPrimaryRunMode={setPrimaryRunMode}
+          executionStopMode={executionStopMode}
+          setExecutionStopMode={setExecutionStopMode}
+          autonomyBatchMaxSteps={autonomyBatchMaxSteps}
+          setAutonomyBatchMaxSteps={setAutonomyBatchMaxSteps}
+          debugToken={debugToken}
+          setDebugToken={setDebugToken}
+          debugBusy={debugBusy}
+          debugChildStateless={debugChildStateless}
+          setDebugChildStateless={setDebugChildStateless}
+          debugNoSharedTools={debugNoSharedTools}
+          setDebugNoSharedTools={setDebugNoSharedTools}
+          debugAttachControlPlaneProject={debugAttachControlPlaneProject}
+          setDebugAttachControlPlaneProject={setDebugAttachControlPlaneProject}
+          orchCodingLoopMaxIterations={orchCodingLoopMaxIterations}
+          setOrchCodingLoopMaxIterations={setOrchCodingLoopMaxIterations}
+          orchestrateLaunchBlocked={orchestrateLaunchBlocked}
+          orchestrateTaskBlocksLaunch={orchestrateTaskBlocksLaunch}
+          orchestrateAttachBlocked={orchestrateAttachBlocked}
+          projectAutonomyBlocked={projectAutonomyBlocked}
+          rpcStatus={rpcStatus}
+          connectRpc={connectRpc}
+          disconnectRpc={disconnectRpc}
+          minimalChildStateless={minimalChildStateless}
+          setMinimalChildStateless={setMinimalChildStateless}
+          sharedWorkspaceKvPresent={health?.sharedWorkspaceKvPresent ?? false}
+          finalizeAckHumanReview={finalizeAckHumanReview}
+          setFinalizeAckHumanReview={setFinalizeAckHumanReview}
+          finalizePersistManifest={finalizePersistManifest}
+          setFinalizePersistManifest={setFinalizePersistManifest}
+          finalizeBusy={finalizeBusy}
+          finalizeResult={finalizeResult}
+          runFinalizeProject={runFinalizeProject}
+          materializeMappingPreset={materializeMappingPreset}
+          setMaterializeMappingPreset={setMaterializeMappingPreset}
+          materializePreview={materializePreview}
+          materializePreviewBusy={materializePreviewBusy}
+          runMaterializePreview={runMaterializePreview}
+          materializeBusy={materializeBusy}
+          runMaterializeProjectZip={runMaterializeProjectZip}
+          runMaterializeProjectJson={runMaterializeProjectJson}
+          runDebugHttp={runDebugHttp}
+          runProjectAutonomyHttp={runProjectAutonomyHttp}
+          runRpcOrchestrate={runRpcOrchestrate}
+          runRpcProbe={runRpcProbe}
+          debugResult={debugResult}
+          applyOrchestrationPreset={applyOrchestrationPreset}
+        />
       )}
       </div>
 
@@ -2654,10 +2536,6 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
         }}
         flash={flash}
       />
-
-      <p className="muted coord-footer-note">
-        Full debug controls also remain on <strong>Chat</strong> (collapsible panel). Prefer this page for operations.
-      </p>
     </section>
   );
 }

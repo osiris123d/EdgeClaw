@@ -5,12 +5,12 @@
       "id": "start",
       "type": "start",
       "outputs": {
-        "next": { "elementId": "is-main" }
+        "next": { "elementId": "chk-main" }
       }
     },
 
     {
-      "id": "is-main",
+      "id": "chk-main",
       "type": "conditional",
       "properties": {
         "conditions": {
@@ -18,13 +18,13 @@
         }
       },
       "outputs": {
-        "true": { "elementId": "main-primary" },
-        "false": { "elementId": "is-coordinator" }
+        "true":  { "elementId": "main-0" },
+        "false": { "elementId": "chk-coord" }
       }
     },
 
     {
-      "id": "is-coordinator",
+      "id": "chk-coord",
       "type": "conditional",
       "properties": {
         "conditions": {
@@ -32,13 +32,13 @@
         }
       },
       "outputs": {
-        "true": { "elementId": "coordinator-primary" },
-        "false": { "elementId": "is-coder" }
+        "true":  { "elementId": "coord-0" },
+        "false": { "elementId": "chk-coder" }
       }
     },
 
     {
-      "id": "is-coder",
+      "id": "chk-coder",
       "type": "conditional",
       "properties": {
         "conditions": {
@@ -46,13 +46,13 @@
         }
       },
       "outputs": {
-        "true": { "elementId": "coder-primary" },
-        "false": { "elementId": "is-browser" }
+        "true":  { "elementId": "coder-0" },
+        "false": { "elementId": "chk-brow" }
       }
     },
 
     {
-      "id": "is-browser",
+      "id": "chk-brow",
       "type": "conditional",
       "properties": {
         "conditions": {
@@ -60,13 +60,13 @@
         }
       },
       "outputs": {
-        "true": { "elementId": "browser-primary" },
-        "false": { "elementId": "tester-primary" }
+        "true":  { "elementId": "brow-0" },
+        "false": { "elementId": "test-0" }
       }
     },
 
     {
-      "id": "main-primary",
+      "id": "main-0",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -75,12 +75,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "main-fallback-1" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "main-1" }
       }
     },
     {
-      "id": "main-fallback-1",
+      "id": "main-1",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -89,12 +89,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "main-fallback-2" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "main-2" }
       }
     },
     {
-      "id": "main-fallback-2",
+      "id": "main-2",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -103,12 +103,13 @@
         "retries": 0
       },
       "outputs": {
-        "success": { "elementId": "end" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
       }
     },
 
     {
-      "id": "coordinator-primary",
+      "id": "coord-0",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -117,12 +118,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "coordinator-fallback-1" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "coord-1" }
       }
     },
     {
-      "id": "coordinator-fallback-1",
+      "id": "coord-1",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -131,12 +132,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "coordinator-fallback-2" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "coord-2" }
       }
     },
     {
-      "id": "coordinator-fallback-2",
+      "id": "coord-2",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -145,12 +146,13 @@
         "retries": 0
       },
       "outputs": {
-        "success": { "elementId": "end" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
       }
     },
 
     {
-      "id": "coder-primary",
+      "id": "coder-0",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -159,12 +161,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "coder-fallback-1" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "coder-1" }
       }
     },
     {
-      "id": "coder-fallback-1",
+      "id": "coder-1",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -173,12 +175,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "coder-fallback-2" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "coder-2" }
       }
     },
     {
-      "id": "coder-fallback-2",
+      "id": "coder-2",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -187,12 +189,13 @@
         "retries": 0
       },
       "outputs": {
-        "success": { "elementId": "end" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
       }
     },
 
     {
-      "id": "browser-primary",
+      "id": "brow-0",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -201,12 +204,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "browser-fallback-1" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "brow-1" }
       }
     },
     {
-      "id": "browser-fallback-1",
+      "id": "brow-1",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -215,12 +218,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "browser-fallback-2" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "brow-2" }
       }
     },
     {
-      "id": "browser-fallback-2",
+      "id": "brow-2",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -229,12 +232,13 @@
         "retries": 0
       },
       "outputs": {
-        "success": { "elementId": "end" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
       }
     },
 
     {
-      "id": "tester-primary",
+      "id": "test-0",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -243,12 +247,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "tester-fallback-1" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "test-1" }
       }
     },
     {
-      "id": "tester-fallback-1",
+      "id": "test-1",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -257,12 +261,12 @@
         "retries": 1
       },
       "outputs": {
-        "success": { "elementId": "end" },
-        "fallback": { "elementId": "tester-fallback-2" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "test-2" }
       }
     },
     {
-      "id": "tester-fallback-2",
+      "id": "test-2",
       "type": "model",
       "properties": {
         "provider": "workers-ai",
@@ -271,13 +275,15 @@
         "retries": 0
       },
       "outputs": {
-        "success": { "elementId": "end" }
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
       }
     },
 
     {
       "id": "end",
-      "type": "end"
+      "type": "end",
+      "outputs": {}
     }
   ]
 }

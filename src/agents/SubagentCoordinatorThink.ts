@@ -24,6 +24,8 @@ import { DEBUG_EDGECLAW_CHILD_NO_SHARED_TOOLS_PREFIX } from "../debug/debugChild
 import { isDebugOrchestrationEnvEnabled } from "../debug/debugOrchestrationWorkerGate";
 import { formatSharedDelegationEnvelope } from "../workspace/delegationEnvelope";
 import { getSharedWorkspaceGateway } from "../workspace/sharedWorkspaceFactory";
+import { mergeCodingLoopDebugQueryParams } from "./codingLoop/codingLoopDebugMerge";
+import { coordinatorLoopEffectiveStatelessSubAgentModelTurn } from "./codingLoop/coordinatorCodingLoopStatelessResolve";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -97,7 +99,10 @@ export class SubagentCoordinatorThink extends Think<Env> {
       }>;
     };
 
+    const childClassName = (agentClass as { name?: string }).name ?? "Think";
+
     const stub = await self.subAgent(agentClass, name);
+
     const originalChars = typeof message === "string" ? message.length : String(message ?? "").length;
     const outboundChars = safeMessage.length;
     const inboundTruncated = originalChars > MAX_SUBAGENT_RPC_INBOUND_MESSAGE_CHARS;
@@ -105,7 +110,7 @@ export class SubagentCoordinatorThink extends Think<Env> {
       "delegation_rpc_outbound",
       JSON.stringify({
         childFacetName: name,
-        childClass: (agentClass as { name?: string }).name ?? "Think",
+        childClass: childClassName,
         stateless: options.statelessSubAgentModelTurn === true,
         originalMessageChars: originalChars,
         outboundMessageChars: outboundChars,
@@ -122,6 +127,7 @@ export class SubagentCoordinatorThink extends Think<Env> {
           email: undefined,
         },
         async () => {
+          let result: SubAgentResult;
           if (options.statelessSubAgentModelTurn === true) {
             const alt = stub.rpcCollectStatelessModelTurn;
             if (typeof alt !== "function") {
@@ -129,9 +135,11 @@ export class SubagentCoordinatorThink extends Think<Env> {
                 "delegateTo: statelessSubAgentModelTurn requires the child class to expose @callable rpcCollectStatelessModelTurn (CoderAgent/TesterAgent)."
               );
             }
-            return alt.call(stub, safeMessage);
+            result = await alt.call(stub, safeMessage);
+          } else {
+            result = await stub.rpcCollectChatTurn(safeMessage);
           }
-          return stub.rpcCollectChatTurn(safeMessage);
+          return result;
         }
       );
     } catch (e) {
@@ -163,16 +171,24 @@ export class SubagentCoordinatorThink extends Think<Env> {
             runId: options.controlPlaneRunId,
           }
         : undefined;
-    let body =
-      options.sharedProjectId != null
-        ? formatSharedDelegationEnvelope(
-            options.sharedProjectId,
-            "coder",
-            message,
-            envelopeObs
-          )
-        : message;
+    let body: string;
     if (
+      options.debugBypassDelegationEnvelope === true &&
+      isDebugOrchestrationEnvEnabled(this.env)
+    ) {
+      body = message;
+    } else if (options.sharedProjectId != null) {
+      body = formatSharedDelegationEnvelope(
+        options.sharedProjectId,
+        "coder",
+        message,
+        envelopeObs
+      );
+    } else {
+      body = message;
+    }
+    if (
+      options.debugBypassDelegationEnvelope !== true &&
       options.debugDisableSharedWorkspaceTools === true &&
       isDebugOrchestrationEnvEnabled(this.env)
     ) {
@@ -200,16 +216,24 @@ export class SubagentCoordinatorThink extends Think<Env> {
             runId: options.controlPlaneRunId,
           }
         : undefined;
-    let body =
-      options.sharedProjectId != null
-        ? formatSharedDelegationEnvelope(
-            options.sharedProjectId,
-            "tester",
-            message,
-            envelopeObs
-          )
-        : message;
+    let body: string;
     if (
+      options.debugBypassDelegationEnvelope === true &&
+      isDebugOrchestrationEnvEnabled(this.env)
+    ) {
+      body = message;
+    } else if (options.sharedProjectId != null) {
+      body = formatSharedDelegationEnvelope(
+        options.sharedProjectId,
+        "tester",
+        message,
+        envelopeObs
+      );
+    } else {
+      body = message;
+    }
+    if (
+      options.debugBypassDelegationEnvelope !== true &&
       options.debugDisableSharedWorkspaceTools === true &&
       isDebugOrchestrationEnvEnabled(this.env)
     ) {
@@ -232,13 +256,9 @@ export class SubagentCoordinatorThink extends Think<Env> {
   ): Promise<CodingCollaborationLoopResult> {
     const loopRunId = crypto.randomUUID();
     const parentRequestId = this.coordRequestId;
-    // Coordinator-hosted loop: always stateless child turns. MainAgent often passes
-    // `statelessSubAgentModelTurn: false` via debug `childTurn: "normal"`, which would otherwise
-    // keep `rpcCollectChatTurn` (`saveMessages` + Agents SQLite) — fragile under nested facets,
-    // deploy-time DO resets, and cross-DO I/O edge cases. Prompts are full per iteration.
     const inputResolved: CodingCollaborationLoopInput = {
       ...input,
-      statelessSubAgentModelTurn: true,
+      statelessSubAgentModelTurn: coordinatorLoopEffectiveStatelessSubAgentModelTurn(input),
     };
 
     return runCodingCollaborationLoop(
@@ -270,7 +290,8 @@ export class SubagentCoordinatorThink extends Think<Env> {
         if (!input || typeof input.sharedProjectId !== "string" || typeof input.task !== "string") {
           return json({ error: "Body must be JSON { input: CodingCollaborationLoopInput }." }, 400);
         }
-        const result = await this.runCoordinatorCodingLoop(input);
+        const mergedInput = mergeCodingLoopDebugQueryParams(input, new URL(request.url).searchParams);
+        const result = await this.runCoordinatorCodingLoop(mergedInput);
         return json(result, 200);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

@@ -45,7 +45,6 @@ import { clampSubAgentResultForRpc, type SubAgentResult } from "../delegation";
 import { executeRpcCollectChatTurn } from "./rpcCollectChatTurnShared";
 import { executeRpcCollectStatelessModelTurn } from "./statelessSubAgentModelTurn";
 import { stripDebugChildNoSharedToolsPrefix } from "../../debug/debugChildDelegationPrefix";
-
 export interface SubAgentThinkConfig {
   modelRouter?: IModelRouter;
   requestId?: string;
@@ -394,7 +393,9 @@ export abstract class BaseSubAgentThink extends Think {
         effective,
         edgeClawGatewayAgentFromConstructorName(this.constructor.name)
       );
-      return clampSubAgentResultForRpc(await executeRpcCollectChatTurn(this, effective));
+      const inner = await executeRpcCollectChatTurn(this, effective);
+      const result = clampSubAgentResultForRpc(inner);
+      return result;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(

@@ -19,13 +19,39 @@
 // ── Public types ──────────────────────────────────────────────────────────────
 
 export type PageIntelParams = {
-  /** The URL to research. Required. */
-  url: string;
+  /**
+   * The URL to research. A full `https://…` URL is recommended; a bare hostname
+   * is accepted and normalized to `https://…`.
+   */
+  url?: string;
+  /**
+   * Alias for `url` (same normalization). Use when the trigger payload only
+   * exposes a generic string field named `key`.
+   */
+  key?: string;
   /** When true, pause for human approval before writing the final report. */
   requireApproval?: boolean;
   /** When true (default), persist the finished report to R2. */
   saveReport?: boolean;
 };
+
+/**
+ * Resolve and normalize the target URL from a Page Intel payload.
+ * Exported for unit tests; `runPageIntelWorkflow` uses this before any browser step.
+ */
+export function resolvePageIntelTargetUrl(payload: PageIntelParams): string {
+  const fromUrl = typeof payload.url === "string" ? payload.url.trim() : "";
+  const fromKey = typeof payload.key === "string" ? payload.key.trim() : "";
+  const raw = fromUrl || fromKey;
+  if (!raw) {
+    throw new Error(
+      'Page Intelligence workflow requires a non-empty "url" (or "key" as an alias). ' +
+        'Example: {"url":"https://example.com"} or {"key":"example.com"}',
+    );
+  }
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return `https://${raw.replace(/^\/+/, "")}`;
+}
 
 export type PageIntelResult = {
   url:         string;
@@ -103,7 +129,8 @@ export async function runPageIntelWorkflow(
   step:    WorkflowStep,
   svc:     PageIntelServices,
 ): Promise<PageIntelResult> {
-  const { url, requireApproval = false, saveReport = true } = payload;
+  const url = resolvePageIntelTargetUrl(payload);
+  const { requireApproval = false, saveReport = true } = payload;
 
   // ── Step 1: Browser Rendering — fetch the page ─────────────────────────────
   const fetched = await step.do("fetch-page", async () => {

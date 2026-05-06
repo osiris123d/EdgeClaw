@@ -14,7 +14,6 @@ export type NavItem =
   | "Settings";
 
 export interface FeatureSettings {
-  modelProfile: "balanced" | "quality" | "speed";
   enableBrowserTools: boolean;
   enableCodeExecution: boolean;
   enableMcp: boolean;

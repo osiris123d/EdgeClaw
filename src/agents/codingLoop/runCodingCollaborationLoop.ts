@@ -21,6 +21,12 @@ import { diffNewPending, listPendingPatchIds } from "./codingLoopPatchSync";
 import { parseTesterVerdict } from "./codingLoopVerdict";
 import { resolveCodingLoopBlueprintInjection } from "./resolveBlueprintInjectionForCodingLoop";
 import { isDurableObjectCodeUpdateResetError } from "./codingLoopTransientErrors";
+import {
+  CODER_IMPLEMENTATION_PATH_POLICY_MARKDOWN,
+  TESTER_IMPLEMENTATION_PATH_POLICY_MARKDOWN,
+  collectNonStagingImplementationPaths,
+  implementationPatchPathsPolicyBypass,
+} from "./codingLoopImplementationPaths";
 
 const SUBAGENT_AUDIT_PREVIEW_MAX = 2000;
 
@@ -54,10 +60,11 @@ function clampIterations(n: number | undefined): number {
 }
 
 /** Serializable options only — never pass `AbortSignal` or callbacks across sub-agent RPC. */
-function buildSubAgentDelegationOptions(
+export function buildSubAgentDelegationOptions(
   host: CodingCollaborationLoopHost,
   input: CodingCollaborationLoopInput,
-  subAgentInstanceSuffix: string
+  subAgentInstanceSuffix: string,
+  _role: "coder" | "tester"
 ): import("../delegation").DelegationOptions {
   const runId =
     (typeof input.controlPlaneRunId === "string" && input.controlPlaneRunId.trim()
@@ -115,7 +122,7 @@ const CODER_ORCHESTRATION_OUTPUT_DISCIPLINE = `
 --- Orchestration reply discipline (mandatory) ---
 - Put substantive work in the shared workspace only: staging files under staging/ and pending patches via shared_workspace_put_patch (and related list/read tools). Do **not** paste large code, full unified diffs, or whole files in this chat.
 - In prose: a short status (what you did / patch ids / blockers). The parent will inspect the workspace; it does not need a transcript-sized reply here.
-`;
+` + CODER_IMPLEMENTATION_PATH_POLICY_MARKDOWN;
 
 const TESTER_ORCHESTRATION_OUTPUT_DISCIPLINE = `
 
@@ -127,6 +134,7 @@ const TESTER_ORCHESTRATION_OUTPUT_DISCIPLINE = `
 /** Tester instructions: explicit blueprint / contract checks (coding-loop verification turns). */
 const TESTER_BLUEPRINT_CONFORMANCE_BLOCK = `Blueprint conformance (mandatory):
 - Compare proposed patches and any implementation you can read against the **acceptance criteria** in the orchestrator task block.
+- When **FILE_STRUCTURE.md** is present in the blueprint bundle, treat it as the contract for staged paths and canonical repo layout; flag violations (wrong staging prefix, mixed staging/canonical trees, unmapped directories) as verification failures.
 - When the blueprint bundle includes **DATA_MODELS.md**, treat documented field types and nullability as **contracts**. Example: if a field is documented as \`string\` and the implementation uses \`string | null\` or allows null without the blueprint explicitly marking it optional/nullable, treat that as a **contract mismatch** → **VERDICT: FAIL** unless the blueprint text clearly allows null/optional for that field.
 - When **API_DESIGN.md** (or **PROJECT_SPEC.md**) is present, HTTP paths, methods, payloads, and response shapes must match. Do not rationalize silent divergence: call out mismatches in your reasoning.
 - If you find a contract or schema mismatch, **FAIL** the verification (do not PASS because the change “seems reasonable”). The orchestrator will send a revision to the coder.
@@ -155,6 +163,7 @@ function buildTesterPrompt(
     opBlock +
     blueprintBlock +
     TESTER_BLUEPRINT_CONFORMANCE_BLOCK +
+    TESTER_IMPLEMENTATION_PATH_POLICY_MARKDOWN +
     TESTER_ORCHESTRATION_OUTPUT_DISCIPLINE +
     `Shared project id: ${sharedProjectId} (iteration ${iteration}).\n` +
     scopeLine +
@@ -329,10 +338,8 @@ export async function runCodingCollaborationLoop(
       ? `${blueprintPrefix}${operatorBlock}${input.task}`
       : input.task;
 
-  const childTurnModeLog = input.statelessSubAgentModelTurn === true ? "stateless" : "normal";
+  const childTurnModeLog = input.statelessSubAgentModelTurn === true ? "stateless" : "stateful";
   const sharedToolsLog = input.debugDisableSharedWorkspaceTools === true ? "disabled" : "enabled";
-  console.info(`child_turn_mode=${childTurnModeLog}`);
-  console.info(`child_shared_workspace_tools=${sharedToolsLog}`);
   host.log("coding_loop.child_turn_config", {
     child_turn_mode: childTurnModeLog,
     child_shared_workspace_tools: sharedToolsLog,
@@ -364,22 +371,18 @@ export async function runCodingCollaborationLoop(
       parentRequestId: host.parentRequestId,
     });
 
-    const coderMessage = buildCoderMessageForIteration(
-      i,
-      seedTask,
-      structuredRevisionHint,
-      revisionTesterText
-    );
+    const coderMessage = buildCoderMessageForIteration(i, seedTask, structuredRevisionHint, revisionTesterText);
 
     let coderResult = await host.delegateToCoder(
       coderMessage,
-      buildSubAgentDelegationOptions(host, input, suffix)
+      buildSubAgentDelegationOptions(host, input, suffix, "coder")
     );
+
     if (!coderResult.ok && isDurableObjectCodeUpdateResetError(coderResult.error)) {
       host.log("coding_loop.coder_retry_after_do_code_reset", { iteration: i });
       coderResult = await host.delegateToCoder(
         coderMessage,
-        buildSubAgentDelegationOptions(host, input, `${suffix}-retry1`)
+        buildSubAgentDelegationOptions(host, input, `${suffix}-retry1`, "coder")
       );
     }
 
@@ -502,13 +505,13 @@ export async function runCodingCollaborationLoop(
     );
     let testerResult = await host.delegateToTester(
       testerMessage,
-      buildSubAgentDelegationOptions(host, input, suffix)
+      buildSubAgentDelegationOptions(host, input, suffix, "tester")
     );
     if (!testerResult.ok && isDurableObjectCodeUpdateResetError(testerResult.error)) {
       host.log("coding_loop.tester_retry_after_do_code_reset", { iteration: i });
       testerResult = await host.delegateToTester(
         testerMessage,
-        buildSubAgentDelegationOptions(host, input, `${suffix}-retry1`)
+        buildSubAgentDelegationOptions(host, input, `${suffix}-retry1`, "tester")
       );
     }
 
@@ -565,7 +568,44 @@ export async function runCodingCollaborationLoop(
       verdict = "pass";
     }
 
-    const revisionCat = inferRevisionReasonCategory(verdict, testerResult.text);
+    let testerTextForInference = testerResult.text;
+    if (
+      verdict === "pass" &&
+      !implementationPatchPathsPolicyBypass({
+        allowImplementationPatchesOutsideStaging: input.allowImplementationPatchesOutsideStaging,
+        task: seedTask,
+      })
+    ) {
+      const idsToAudit =
+        activePatchIdsForIteration.length > 0
+          ? activePatchIdsForIteration
+          : newPending.length > 0
+            ? [...newPending]
+            : [];
+      if (idsToAudit.length > 0) {
+        const bodies: string[] = [];
+        for (const patchId of idsToAudit) {
+          const got = await gateway.getPatchProposal("orchestrator", input.sharedProjectId, patchId);
+          if ("error" in got) continue;
+          bodies.push(got.record.body);
+        }
+        const bad = collectNonStagingImplementationPaths(bodies);
+        if (bad.length > 0) {
+          verdict = "fail";
+          testerTextForInference =
+            `MANAGER PATH POLICY: implementation patches must only touch paths under staging/… (materialization maps them later). ` +
+            `Non-staging path(s): ${bad.join(", ")}. Remap to staging/<logical-file> or add [ALLOW_DIRECT_REPO_PATHS] to the task if canonical paths are explicitly required.\n\n` +
+            `--- Tester output ---\n${testerResult.text}`;
+          host.log("coding_loop.staging_path_policy_violation", {
+            iteration: i,
+            patchIds: idsToAudit,
+            nonStagingPaths: bad,
+          });
+        }
+      }
+    }
+
+    const revisionCat = inferRevisionReasonCategory(verdict, testerTextForInference);
     const verdictScope: CodingIterationRecord["testerVerdictScope"] =
       activePatchIdsForIteration.length > 0 ? "patch_set" : "project_wide_note";
 
@@ -580,7 +620,7 @@ export async function runCodingCollaborationLoop(
       failureStreak = 0;
       previousFailureNormalized = "";
     } else {
-      const curNorm = normalizeTesterFeedbackForComparison(testerResult.text);
+      const curNorm = normalizeTesterFeedbackForComparison(testerTextForInference);
       const { nextStreak, isRepeated } = detectRepeatedFailure(
         previousFailureNormalized,
         curNorm,
@@ -620,11 +660,11 @@ export async function runCodingCollaborationLoop(
     }
 
     if (verdict === "fail" || verdict === "unknown") {
-      revisionTesterText = testerResult.text;
+      revisionTesterText = testerTextForInference;
       structuredRevisionHint = {
         iteration: i,
         revisionReasonCategory: revisionCat,
-        testerFeedbackExcerpt: testerResult.text.slice(0, 4000),
+        testerFeedbackExcerpt: testerTextForInference.slice(0, 4000),
         verificationPatchIds: activePatchIdsForIteration,
         testerVerdict: verdict,
       };

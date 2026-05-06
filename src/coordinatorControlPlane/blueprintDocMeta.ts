@@ -25,6 +25,8 @@ export function filePassesValidatedGate(
     case "DATA_MODELS.md":
     case "API_DESIGN.md":
       return c.length >= 20;
+    case "FILE_STRUCTURE.md":
+      return c.length >= 20;
     default:
       return false;
   }

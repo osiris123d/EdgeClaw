@@ -7,12 +7,16 @@ import { OrchestrationBlueprintError } from "../coordinatorControlPlane/projectB
 
 export type DebugOrchestrationMode = "success" | "fail_revise";
 
+export type DebugChildTurnMode = "normal" | "stateless";
+
 /** Debug-only options for `runDebugOrchestrationScenario` (HTTP + RPC). */
 export interface DebugOrchestrationRunOptions {
-  /** `normal` = rpcCollectChatTurn / saveMessages; `stateless` = rpcCollectStatelessModelTurn. */
-  childTurn?: "normal" | "stateless";
+  /** `normal` = stateful `rpcCollectChatTurn`; `stateless` = `rpcCollectStatelessModelTurn`. */
+  childTurn?: DebugChildTurnMode;
   /** When true, child omits shared_workspace_* tools for this run (message prefix protocol). */
   disableSharedWorkspaceTools?: boolean;
+  /** Override coding-loop iteration cap (defaults mode-based). */
+  maxIterations?: number;
   /**
    * Control-plane registry project id — MainAgent loads blueprint from KV and uses
    * that row's `sharedProjectId` for the shared workspace. Requires readiness === ready.
@@ -33,7 +37,7 @@ export interface DebugOrchestrationRunOptions {
 export interface DebugOrchestrationScenarioOutcome {
   result: CodingCollaborationLoopResult;
   iterationTrace: string[];
-  childTurnModeUsed: "normal" | "stateless";
+  childTurnModeUsed: DebugChildTurnMode;
   sharedWorkspaceToolsEnabled: boolean;
   orchestrationMeta?: {
     projectIdUsed: string | null;
@@ -76,10 +80,16 @@ export function parseDebugOrchestrationMode(raw: string | undefined): DebugOrche
   return "success";
 }
 
-export function parseDebugChildTurnMode(raw: string | undefined): "normal" | "stateless" {
+export function parseDebugChildTurnMode(raw: string | undefined): DebugChildTurnMode {
   const t = (raw ?? "normal").trim().toLowerCase();
   if (t === "stateless") return "stateless";
   return "normal";
+}
+
+export function parseCodingLoopMaxIterations(raw: string | undefined): number | undefined {
+  if (raw == null || raw.trim() === "") return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isNaN(n) ? undefined : n;
 }
 
 export function parseDebugDisableSharedTools(raw: string | undefined): boolean {
@@ -149,16 +159,21 @@ export function buildDebugOrchestrationManagerTask(
 
 export function resolveDebugOrchestrateRequestFieldsSync(url: URL): {
   mode: DebugOrchestrationMode;
-  childTurn: "normal" | "stateless";
+  childTurn: DebugChildTurnMode;
   disableSharedTools: boolean;
+  maxIterations?: number;
   controlPlaneProjectId?: string;
   controlPlaneTaskId?: string;
   sessionId: string;
 } {
+  const disableSharedFrom =
+    parseDebugDisableSharedTools(url.searchParams.get("noSharedTools") ?? undefined) ||
+    parseDebugDisableSharedTools(url.searchParams.get("disableSharedWorkspaceTools") ?? undefined);
   return {
     mode: parseDebugOrchestrationMode(url.searchParams.get("mode") ?? undefined),
     childTurn: parseDebugChildTurnMode(url.searchParams.get("childTurn") ?? undefined),
-    disableSharedTools: parseDebugDisableSharedTools(url.searchParams.get("noSharedTools") ?? undefined),
+    disableSharedTools: disableSharedFrom,
+    maxIterations: parseCodingLoopMaxIterations(url.searchParams.get("maxIterations") ?? undefined),
     controlPlaneProjectId: parseControlPlaneProjectId(url.searchParams.get("projectId") ?? undefined),
     controlPlaneTaskId: parseControlPlaneTaskId(url.searchParams.get("taskId") ?? undefined),
     sessionId: parseDebugOrchestrationSessionId(url.searchParams.get("session") ?? undefined),
@@ -170,8 +185,9 @@ export async function resolveDebugOrchestrateRequestFields(
   url: URL
 ): Promise<{
   mode: DebugOrchestrationMode;
-  childTurn: "normal" | "stateless";
+  childTurn: DebugChildTurnMode;
   disableSharedTools: boolean;
+  maxIterations?: number;
   controlPlaneProjectId?: string;
   controlPlaneTaskId?: string;
   sessionId: string;
@@ -187,6 +203,7 @@ export async function resolveDebugOrchestrateRequestFields(
           mode?: string;
           childTurn?: string;
           noSharedTools?: string | boolean;
+          maxIterations?: number;
           projectId?: string;
           taskId?: string;
           sessionId?: string;
@@ -194,17 +211,25 @@ export async function resolveDebugOrchestrateRequestFields(
         const fromUrl = parseControlPlaneProjectId(url.searchParams.get("projectId") ?? undefined);
         const fromUrlTask = parseControlPlaneTaskId(url.searchParams.get("taskId") ?? undefined);
         const sessionFromUrl = parseDebugOrchestrationSessionId(url.searchParams.get("session") ?? undefined);
+        const disableSharedBody =
+          typeof body.noSharedTools === "boolean"
+            ? body.noSharedTools
+            : parseDebugDisableSharedTools(
+                typeof body.noSharedTools === "string" ? body.noSharedTools : undefined
+              );
+        const disableSharedUrl =
+          parseDebugDisableSharedTools(url.searchParams.get("noSharedTools") ?? undefined) ||
+          parseDebugDisableSharedTools(url.searchParams.get("disableSharedWorkspaceTools") ?? undefined);
         return {
           mode: parseDebugOrchestrationMode(body.mode),
           childTurn: parseDebugChildTurnMode(
             typeof body.childTurn === "string" ? body.childTurn : undefined
           ),
-          disableSharedTools:
-            typeof body.noSharedTools === "boolean"
-              ? body.noSharedTools
-              : parseDebugDisableSharedTools(
-                  typeof body.noSharedTools === "string" ? body.noSharedTools : undefined
-                ),
+          disableSharedTools: disableSharedBody || disableSharedUrl,
+          maxIterations:
+            typeof body.maxIterations === "number"
+              ? body.maxIterations
+              : parseCodingLoopMaxIterations(url.searchParams.get("maxIterations") ?? undefined),
           controlPlaneProjectId:
             parseControlPlaneProjectId(typeof body.projectId === "string" ? body.projectId : undefined) ??
             fromUrl,
@@ -243,7 +268,7 @@ export function formatDebugOrchestrationResponseBody(input: {
   mode: DebugOrchestrationMode;
   result: CodingCollaborationLoopResult;
   iterationTrace: string[];
-  childTurnModeUsed?: "normal" | "stateless";
+  childTurnModeUsed?: DebugChildTurnMode;
   sharedWorkspaceToolsForCoderTester?: "enabled" | "disabled";
   orchestrationMeta?: DebugOrchestrationScenarioOutcome["orchestrationMeta"];
 }): Record<string, unknown> {
@@ -335,6 +360,7 @@ export async function handleDebugOrchestrateDoRequest(
     const outcome = await runner.runDebugOrchestrationScenario(fields.mode, "http", {
       childTurn: fields.childTurn,
       disableSharedWorkspaceTools: fields.disableSharedTools,
+      ...(fields.maxIterations != null ? { maxIterations: fields.maxIterations } : {}),
       controlPlaneProjectId: fields.controlPlaneProjectId,
       controlPlaneTaskId: fields.controlPlaneTaskId,
       sessionId: fields.sessionId,

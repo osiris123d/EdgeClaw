@@ -31,6 +31,14 @@ import type {
   ProjectBlueprint,
 } from "./types";
 import { BLUEPRINT_FILE_KEYS } from "./types";
+import {
+  assessProjectFinalizeReadiness,
+  buildProjectFinalizeManifest,
+} from "./projectFinalize";
+import { materializeFromAppliedPatches } from "./materializeProject";
+import { resolveMaterializeMappingFromRequest } from "./materializePathMappings";
+import { buildStoredZip } from "./materializeZip";
+import { isDebugSystemPatchId } from "./patchClassification";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -211,6 +219,228 @@ export async function handleCoordinatorControlPlaneRequest(
         );
       }
       return json(result, 200);
+    }
+
+    if (seg[0] === "projects" && seg.length === 3 && seg[2] === "finalize" && request.method === "POST") {
+      if (!controlPlaneStorageAvailable(env)) return storageRequired();
+      const projectId = seg[1]!;
+      const body = (await request.json()) as {
+        persistManifest?: boolean;
+        operatorAcknowledgesHumanReviewRequired?: boolean;
+      };
+      if (body.operatorAcknowledgesHumanReviewRequired !== true) {
+        return json(
+          {
+            error:
+              "operatorAcknowledgesHumanReviewRequired must be true — finalize is review-only and never deploys; confirm human oversight.",
+          },
+          400
+        );
+      }
+
+      const project = await getProject(env, projectId);
+      if (!project) return json({ error: "Project not found" }, 404);
+
+      const tasks = await listTasksForProject(env, projectId);
+      const readiness = assessProjectFinalizeReadiness(tasks);
+
+      const gateway = getSharedWorkspaceGateway(env);
+      if (!gateway) {
+        return json(
+          {
+            error: "Shared workspace KV is not bound.",
+            hint: "Bind SHARED_WORKSPACE_KV to gather applied patches for finalize.",
+            readiness,
+          },
+          503
+        );
+      }
+
+      const sharedProjectId = project.sharedProjectId.trim();
+      const listed = await gateway.listPatchProposals("orchestrator", sharedProjectId);
+      if ("error" in listed) {
+        return json({ error: listed.error, readiness }, 500);
+      }
+
+      const allPatchesListed = listed.patches.map((p) => ({
+        patchId: p.patchId,
+        status: p.status,
+      }));
+
+      const appliedTaskPatches: Array<{
+        patchId: string;
+        record: import("../workspace/sharedWorkspaceTypes").PatchProposalRecord;
+      }> = [];
+      for (const row of listed.patches) {
+        if (row.status !== "applied") continue;
+        if (isDebugSystemPatchId(row.patchId)) continue;
+        const got = await gateway.getPatchProposal("orchestrator", sharedProjectId, row.patchId);
+        if ("error" in got) continue;
+        appliedTaskPatches.push({ patchId: row.patchId, record: got.record });
+      }
+
+      const manifest = buildProjectFinalizeManifest({
+        project,
+        tasks,
+        appliedTaskPatches,
+        allPatchesListed,
+        readiness,
+        operatorAcknowledgesHumanReviewRequired: true,
+      });
+
+      let manifestPersistPath: string | null = null;
+      if (body.persistManifest === true) {
+        const slug =
+          project.projectSlug?.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "project";
+        manifestPersistPath = `finalize/manifests/${slug}-${manifest.generatedAt.replace(/[:.]/g, "-")}.json`;
+        const written = await gateway.writeFile(
+          "orchestrator",
+          sharedProjectId,
+          manifestPersistPath,
+          `${JSON.stringify(manifest, null, 2)}\n`
+        );
+        if ("error" in written) {
+          return json(
+            {
+              error: written.error,
+              readiness,
+              manifest,
+              manifestPersistAttemptPath: manifestPersistPath,
+            },
+            500
+          );
+        }
+      }
+
+      return json({
+        ok: readiness.ok,
+        readiness,
+        manifest,
+        sharedProjectId,
+        manifestPersistPath,
+      });
+    }
+
+    if (seg[0] === "projects" && seg.length === 3 && seg[2] === "materialize" && request.method === "POST") {
+      if (!controlPlaneStorageAvailable(env)) return storageRequired();
+      const projectId = seg[1]!;
+      const body = (await request.json()) as {
+        format?: "zip" | "json" | "preview";
+        mappingPreset?: unknown;
+        pathMappings?: unknown;
+      };
+
+      const resolvedMapping = resolveMaterializeMappingFromRequest({
+        mappingPreset: body.mappingPreset,
+        pathMappings: body.pathMappings,
+      });
+      if ("error" in resolvedMapping) {
+        return json({ error: resolvedMapping.error }, 400);
+      }
+      const pathMappings = resolvedMapping.rules;
+
+      const formatRaw = body.format;
+      const format: "zip" | "json" | "preview" =
+        formatRaw === "json" ? "json" : formatRaw === "preview" ? "preview" : "zip";
+
+      const project = await getProject(env, projectId);
+      if (!project) return json({ error: "Project not found" }, 404);
+
+      const gateway = getSharedWorkspaceGateway(env);
+      if (!gateway) {
+        return json(
+          {
+            error: "Shared workspace KV is not bound.",
+            hint: "Bind SHARED_WORKSPACE_KV to gather applied patches for materialize/export.",
+          },
+          503
+        );
+      }
+
+      const sharedProjectId = project.sharedProjectId.trim();
+      const listed = await gateway.listPatchProposals("orchestrator", sharedProjectId);
+      if ("error" in listed) {
+        return json({ error: listed.error }, 500);
+      }
+
+      const patches: Array<{ patchId: string; updatedAt: string; body: string }> = [];
+      for (const row of listed.patches) {
+        if (row.status !== "applied") continue;
+        if (isDebugSystemPatchId(row.patchId)) continue;
+        const got = await gateway.getPatchProposal("orchestrator", sharedProjectId, row.patchId);
+        if ("error" in got) continue;
+        patches.push({
+          patchId: row.patchId,
+          updatedAt: got.record.updatedAt,
+          body: got.record.body,
+        });
+      }
+
+      const meta = materializeFromAppliedPatches(patches, pathMappings);
+
+      const materializeReport = {
+        generatedAt: new Date().toISOString(),
+        mapping: {
+          preset: resolvedMapping.preset,
+          rules: pathMappings,
+        },
+        previewRows: meta.previewRows,
+        conflicts: meta.conflicts,
+        skipped: meta.skipped,
+        patchCount: patches.length,
+        fileCount: meta.files.size,
+      };
+
+      if (format === "preview") {
+        return json({
+          ok: true,
+          sharedProjectId,
+          format: "preview",
+          ...materializeReport,
+        });
+      }
+
+      if (format === "json") {
+        const filesObj: Record<string, string> = {};
+        const sortedPaths = [...meta.files.keys()].sort((a, b) => a.localeCompare(b));
+        for (const p of sortedPaths) {
+          filesObj[p] = meta.files.get(p) ?? "";
+        }
+        return json({
+          ok: true,
+          sharedProjectId,
+          format: "json",
+          files: filesObj,
+          ...materializeReport,
+        });
+      }
+
+      const slug =
+        project.projectSlug?.trim().replace(/[^a-zA-Z0-9_.-]+/g, "-").slice(0, 80) || "project";
+      const filename = `${slug}-materialized.zip`;
+      const conflictsJson = `${JSON.stringify(materializeReport, null, 2)}\n`;
+      const readme =
+        `Materialized from applied shared-workspace patches (${patches.length} patches).\n` +
+        `MATERIALIZE_REPORT.json contains mapping preset/rules, per-patch/path preview rows, conflicts, and skips.\n`;
+
+      const sortedPaths = [...meta.files.keys()].sort((a, b) => a.localeCompare(b));
+      const zipBytes = buildStoredZip([
+        { path: "README_MATERIALIZE.txt", contentUtf8: readme },
+        { path: "MATERIALIZE_REPORT.json", contentUtf8: conflictsJson },
+        ...sortedPaths.map((p) => ({ path: p, contentUtf8: meta.files.get(p) ?? "" })),
+      ]);
+
+      const zipCopy = zipBytes.buffer.slice(zipBytes.byteOffset, zipBytes.byteOffset + zipBytes.byteLength);
+      return new Response(zipCopy as ArrayBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/zip",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          "X-Materialize-Patch-Count": String(patches.length),
+          "X-Materialize-File-Count": String(meta.files.size),
+          "X-Materialize-Conflict-Count": String(meta.conflicts.length),
+        },
+      });
     }
 
     if (seg[0] === "projects" && seg.length === 2 && request.method === "PATCH") {

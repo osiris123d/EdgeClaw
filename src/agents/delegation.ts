@@ -95,6 +95,11 @@ export interface DelegationOptions {
    */
   debugDisableSharedWorkspaceTools?: boolean;
   /**
+   * DEBUG only (requires `ENABLE_DEBUG_ORCHESTRATION_ENDPOINT`): skip {@link formatSharedDelegationEnvelope}
+   * and send `message` as the RPC body. Does **not** apply {@link debugDisableSharedWorkspaceTools} unless `debugBypassDelegationEnvelope` is false.
+   */
+  debugBypassDelegationEnvelope?: boolean;
+  /**
    * Additional tools to merge into the child's tool set for this turn.
    * These are passed as `callerTools` and have the highest merge priority.
    *

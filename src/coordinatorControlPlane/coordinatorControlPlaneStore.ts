@@ -20,6 +20,7 @@ import type {
   CoordinatorRunIterationSummary,
   CoordinatorTask,
   ProjectBlueprint,
+  ProjectBlueprintSchemaVersion,
 } from "./types";
 import { BLUEPRINT_FILE_KEYS, CONTROL_PLANE_STATE_KEY } from "./types";
 
@@ -36,7 +37,9 @@ function emptyState(): CoordinatorControlPlaneState {
 function normalizeBlueprintInput(input: unknown): ProjectBlueprint {
   const docs: ProjectBlueprint["docs"] = {};
   const templateFingerprints: NonNullable<ProjectBlueprint["templateFingerprints"]> = {};
+  let schemaVersion: ProjectBlueprintSchemaVersion = 1;
   if (isRecord(input)) {
+    if (input.schemaVersion === 2) schemaVersion = 2;
     if (isRecord(input.docs)) {
       for (const k of BLUEPRINT_FILE_KEYS) {
         const v = input.docs[k];
@@ -50,7 +53,7 @@ function normalizeBlueprintInput(input: unknown): ProjectBlueprint {
       }
     }
   }
-  return withComputedDocState({ schemaVersion: 1, docs, templateFingerprints });
+  return withComputedDocState({ schemaVersion, docs, templateFingerprints });
 }
 
 function mergeBlueprintPatch(prev: ProjectBlueprint, patchRaw: unknown): ProjectBlueprint {
@@ -69,8 +72,12 @@ function mergeBlueprintPatch(prev: ProjectBlueprint, patchRaw: unknown): Project
       if (typeof v === "string") mergedFp[k] = v;
     }
   }
+  let schemaVersion: ProjectBlueprintSchemaVersion = prev.schemaVersion === 2 ? 2 : 1;
+  if (isRecord(patchRaw) && patchRaw.schemaVersion === 2) {
+    schemaVersion = 2;
+  }
   return withComputedDocState({
-    schemaVersion: 1,
+    schemaVersion,
     docs: mergedDocs,
     templateFingerprints: mergedFp,
   });

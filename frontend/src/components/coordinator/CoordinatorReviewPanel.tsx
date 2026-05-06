@@ -5,6 +5,7 @@ import {
   patchCoordinatorRun,
   patchCoordinatorTask,
 } from "../../lib/coordinatorControlPlaneApi";
+import { isDebugSystemPatchId } from "../../lib/coordinatorPatchClassification";
 import type {
   CoordinatorProject,
   CoordinatorRun,
@@ -28,12 +29,6 @@ export interface CoordinatorReviewPanelProps {
 }
 
 type WorkspacePatchRow = { patchId: string; status: string };
-
-/** Debug / orchestration harness patch ids (review-only classification; does not affect runtime). */
-export function isDebugSystemPatchId(patchId: string): boolean {
-  const id = patchId.trim().toLowerCase();
-  return id.startsWith("debug-orch");
-}
 
 function collectRunLinkedPatchIds(run: CoordinatorRun | null): Set<string> {
   const s = new Set<string>();

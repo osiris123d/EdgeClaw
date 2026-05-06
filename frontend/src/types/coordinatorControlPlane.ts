@@ -7,14 +7,17 @@ export const BLUEPRINT_FILE_KEYS = [
   "API_DESIGN.md",
   "AI_INSTRUCTIONS.md",
   "CONTEXT.md",
+  "FILE_STRUCTURE.md",
 ] as const;
 
 export type BlueprintFileKey = (typeof BLUEPRINT_FILE_KEYS)[number];
 
 export type BlueprintDocSourceState = "missing" | "template_only" | "edited" | "validated";
 
+export type ProjectBlueprintSchemaVersion = 1 | 2;
+
 export interface ProjectBlueprint {
-  schemaVersion?: 1;
+  schemaVersion?: ProjectBlueprintSchemaVersion;
   docs: Partial<Record<BlueprintFileKey, string>>;
   templateFingerprints?: Partial<Record<BlueprintFileKey, string>>;
   docState?: Partial<Record<BlueprintFileKey, BlueprintDocSourceState>>;

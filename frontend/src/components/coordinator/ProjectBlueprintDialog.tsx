@@ -89,6 +89,8 @@ export function ProjectBlueprintDialog({
   const [activeFile, setActiveFile] = useState<BlueprintFileKey>("PROJECT_SPEC.md");
   const [docs, setDocs] = useState<Partial<Record<BlueprintFileKey, string>>>(() => emptyDocs());
   const [fingerprints, setFingerprints] = useState<Partial<Record<BlueprintFileKey, string>>>(() => ({}));
+  /** Mirrors persisted blueprint schema (v2 required FILE_STRUCTURE for readiness after templates). */
+  const [blueprintSchemaVersion, setBlueprintSchemaVersion] = useState<1 | 2>(1);
   const [lastSaved, setLastSaved] = useState<CoordinatorProject | null>(null);
 
   const resetCreate = useCallback(() => {
@@ -104,6 +106,7 @@ export function ProjectBlueprintDialog({
     setActiveFile("PROJECT_SPEC.md");
     setDocs(emptyDocs());
     setFingerprints({});
+    setBlueprintSchemaVersion(1);
     setLastSaved(null);
     setLoadErr(null);
   }, []);
@@ -132,6 +135,7 @@ export function ProjectBlueprintDialog({
         setAllowedScopeDirs(project.allowedScopeDirs?.length ? project.allowedScopeDirs.join(", ") : "");
         setDocs(mergeDocsFromBlueprint(project.blueprint));
         setFingerprints(mergeFingerprintsFromBlueprint(project.blueprint));
+        setBlueprintSchemaVersion(project.blueprint.schemaVersion === 2 ? 2 : 1);
         setLastSaved(project);
       } catch (e) {
         if (!cancelled) setLoadErr(e instanceof Error ? e.message : "Load failed");
@@ -178,6 +182,7 @@ export function ProjectBlueprintDialog({
       }
       setDocs(next);
       setFingerprints({ ...blueprint.templateFingerprints });
+      setBlueprintSchemaVersion(blueprint.schemaVersion === 2 ? 2 : 1);
       setSharedProjectId((sid) => {
         const t = sid.trim();
         if (!t || t === pid.trim()) return slug;
@@ -209,6 +214,7 @@ export function ProjectBlueprintDialog({
       if (typeof fp === "string") {
         setFingerprints((f) => ({ ...f, [activeFile]: fp }));
       }
+      setBlueprintSchemaVersion(blueprint.schemaVersion === 2 ? 2 : 1);
       flash(`Regenerated ${activeFile}.`);
     } catch (e) {
       flash(e instanceof Error ? e.message : "Template request failed", "error");
@@ -237,8 +243,8 @@ export function ProjectBlueprintDialog({
     for (const k of BLUEPRINT_FILE_KEYS) {
       out[k] = docs[k] ?? "";
     }
-    return { schemaVersion: 1, docs: out, templateFingerprints: { ...fingerprints } };
-  }, [docs, fingerprints]);
+    return { schemaVersion: blueprintSchemaVersion, docs: out, templateFingerprints: { ...fingerprints } };
+  }, [docs, fingerprints, blueprintSchemaVersion]);
 
   const parseScopeDirs = useCallback((): string[] => {
     return allowedScopeDirs

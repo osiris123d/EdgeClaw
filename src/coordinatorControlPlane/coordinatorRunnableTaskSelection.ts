@@ -16,7 +16,19 @@ export type PickRunnableTaskFailureReason =
   | "project_not_ready"
   | "no_todo_tasks"
   | "no_runnable_tasks"
-  | "dependency_blocked";
+  | "dependency_blocked"
+  /** Debug `/debug/project-autonomy?taskId=` — id not in project task list. */
+  | "forced_task_not_found"
+  /** Forced task belongs to another project (data inconsistency). */
+  | "forced_task_wrong_project"
+  /** Forced task exists but is not `todo` / `in_progress`. */
+  | "forced_task_not_pickable";
+
+/** Optional overrides for task selection (project autonomy). */
+export interface PickRunnableTaskOptions {
+  /** When set, select this task id directly (`todo` / `in_progress` / `review`-eligible paths only). */
+  forceTaskId?: string;
+}
 
 export interface PickRunnableTaskAuditEntry {
   taskId: string;
@@ -78,11 +90,13 @@ function isAutonomyPickableStatus(t: CoordinatorTask): boolean {
 
 /**
  * Picks the next **todo** or **in_progress** task for autonomy. Excludes investigation / infra follow-ups from autopilot.
- * Skips tasks whose {@link CoordinatorTask.dependsOnTaskIds} are not all satisfied (done or review).
+ * Skips tasks whose {@link CoordinatorTask.dependsOnTaskIds} are not all satisfied (done or review), unless
+ * {@link PickRunnableTaskOptions.forceTaskId} is set (direct task run).
  */
 export async function pickNextRunnableTaskForProject(
   env: Env,
-  projectId: string
+  projectId: string,
+  pickOptions?: PickRunnableTaskOptions
 ): Promise<PickRunnableTaskResult> {
   const id = projectId.trim();
   const project = await getProject(env, id);
@@ -92,6 +106,56 @@ export async function pickNextRunnableTaskForProject(
 
   const tasks = await listTasksForProject(env, id);
   const byId = new Map(tasks.map((t) => [t.taskId, t]));
+
+  const forceId = pickOptions?.forceTaskId?.trim();
+  const skipDependencyChecks = forceId != null && forceId !== "";
+
+  if (forceId) {
+    const t = byId.get(forceId);
+    const audit: PickRunnableTaskAuditEntry[] = [];
+    if (!t) {
+      console.info(
+        "project_autonomy_forced_task_missing",
+        JSON.stringify({ projectId: id, taskId: forceId })
+      );
+      return { ok: false, reason: "forced_task_not_found" };
+    }
+    if (t.projectId.trim() !== id) {
+      console.info(
+        "project_autonomy_forced_task_wrong_project",
+        JSON.stringify({
+          projectId: id,
+          taskId: forceId,
+          taskProjectId: t.projectId,
+        })
+      );
+      return { ok: false, reason: "forced_task_wrong_project" };
+    }
+    if (!isAutonomyPickableStatus(t)) {
+      console.info(
+        "project_autonomy_forced_task_bad_status",
+        JSON.stringify({ projectId: id, taskId: forceId, status: t.status })
+      );
+      return { ok: false, reason: "forced_task_not_pickable" };
+    }
+    audit.push({ taskId: t.taskId, reason: "selected" });
+    console.info(
+      "project_autonomy_task_selected",
+      JSON.stringify({
+        projectId: id,
+        taskId: t.taskId,
+        selectionReason: "debug_forced_task_id",
+        forced: true,
+        dependencyChecksSkipped: skipDependencyChecks,
+      })
+    );
+    return {
+      ok: true,
+      task: t,
+      selectionReason: "debug_forced_task_id",
+      audit,
+    };
+  }
 
   const pickable = tasks.filter((t) => isAutonomyPickableStatus(t));
   if (pickable.length === 0) {
@@ -144,7 +208,12 @@ export async function pickNextRunnableTaskForProject(
     const selectionReason = `tier_${tier}_fifo_createdAt_deps_ok (roadmap→manual→generated)`;
     console.info(
       "project_autonomy_task_selected",
-      JSON.stringify({ projectId, taskId: t.taskId, selectionReason, tier })
+      JSON.stringify({
+        projectId,
+        taskId: t.taskId,
+        selectionReason,
+        tier,
+      })
     );
     return { ok: true, task: t, selectionReason, audit };
   }

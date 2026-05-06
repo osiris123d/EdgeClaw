@@ -28,7 +28,7 @@
 import { test } from "node:test";
 import assert   from "node:assert/strict";
 
-const { runPageIntelWorkflow } = await import(
+const { runPageIntelWorkflow, resolvePageIntelTargetUrl } = await import(
   "../dist/workflows/pageIntelWorkflowLogic.js"
 );
 
@@ -354,4 +354,41 @@ test("14. result shape — url and title come from fetch step, not payload alone
 
   assert.equal(result.url,   "https://specific.example.com");
   assert.equal(result.title, "Specific Title From Browser");
+});
+
+test("15. payload may use key alias — bare hostname normalized to https", async () => {
+  assert.equal(resolvePageIntelTargetUrl({ key: "rocgw.jcsk100.com" }), "https://rocgw.jcsk100.com");
+
+  const step        = makeStep();
+  let requestedUrl = null;
+  const { svc } = makeSvc({
+    async fetchPageContent(url) {
+      requestedUrl = url;
+      return { title: "T", bodyText: "Body" };
+    },
+  });
+
+  const result = await runPageIntelWorkflow({ key: "rocgw.jcsk100.com" }, step, svc);
+  assert.equal(requestedUrl, "https://rocgw.jcsk100.com");
+  assert.equal(result.url,   "https://rocgw.jcsk100.com");
+});
+
+test("16. url field wins when both url and key are set", () => {
+  assert.equal(
+    resolvePageIntelTargetUrl({ url: "https://a.example", key: "https://b.example" }),
+    "https://a.example",
+  );
+});
+
+test("17. missing url and key — clear error (avoids invalid Page.navigate)", async () => {
+  const step = makeStep();
+  const { svc } = makeSvc();
+
+  await assert.rejects(
+    () => runPageIntelWorkflow({}, step, svc),
+    (err) =>
+      typeof err.message === "string" &&
+      err.message.includes("url") &&
+      err.message.includes("key"),
+  );
 });

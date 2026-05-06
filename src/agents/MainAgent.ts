@@ -281,6 +281,18 @@ import {
 import { isExplicitBrowserSessionStructuredUserMessage } from "./browserSessionUserMessageMerge";
 import { assertOrchestratorPromotionBoundary } from "./orchestratorPromotionBoundary";
 
+/** First-party browser tools gated by main-chat Settings → Enable browser tools. */
+const MAIN_CHAT_BROWSER_TOOL_NAMES = new Set([
+  "browser_search",
+  "browser_execute",
+  "browser_session",
+]);
+
+const BROWSER_TOOLS_DISABLED_IN_CHAT_SETTINGS_RESPONSE =
+  "Browser automation is turned off for this chat — **Enable browser tools** is unchecked in EdgeClaw Settings. " +
+  "Turn it on there to use browser_search, browser_execute, and browser_session in this chat. " +
+  "**Agent Browsing** (dedicated page) still has full browser tools regardless.";
+
 /**
  * Options forwarded to Think's `addMcpServer` for URL-based MCP connections.
  *
@@ -902,6 +914,12 @@ export class MainAgent extends BaseThinkWithVoice {
    * Switching to "puppeteer" routes all browser actions through @cloudflare/puppeteer.
    */
   private _browserStepExecutor: "cdp" | "puppeteer" = "cdp";
+  /**
+   * Set each `beforeTurn` from `settings.enableBrowserTools` (main chat UI). When false,
+   * browser_* tools are removed from activeTools and blocked in beforeToolCall. The Agent
+   * Browsing DO does not receive this gate.
+   */
+  private _chatBrowserToolsAllowedThisTurn = false;
   private _turnBrowserSessionLaunchSucceeded = false;
   private _turnFirstBrowserSessionLaunchResult: unknown = undefined;
   private _turnFirstBrowserSessionLaunchAllowsFollowup = false;
@@ -1522,37 +1540,7 @@ export class MainAgent extends BaseThinkWithVoice {
         "Your goal is not just to answer, but to help the user arrive at sound decisions. " +
         "RESPONSE FORMATTING: The chat UI renders your replies as Markdown (GitHub Flavored Markdown, including pipe tables). " +
         "For comparisons, inventories, rule lists, or multi-field data, prefer `##` / `###` section headings and stable-column GFM tables over long dense prose. " +
-        "Keep table headers short; align similar values in columns. " +
-        // ── Browser grounding rules ───────────────────────────────────────────
-        "BROWSER ACTION GROUNDING RULE: For any request involving opening a URL, navigating, taking a screenshot, recording a session, or any browser automation, " +
-        "you MUST only claim the action occurred if a browser tool was actually called and returned a successful result in this conversation turn. " +
-        "If no browser tool was executed, respond with: \"No browser tool was executed, so I cannot confirm the action occurred.\" " +
-        "STRUCTURED BROWSER ACTIONS: Prefer using structured actions in browser_session when appropriate: " +
-        "  - navigate { url, waitUntil? } to load pages " +
-        "  - click { selector, delayMs? } to click buttons/links " +
-        "  - type { selector, value, delayMs?, clearFirst? } to fill forms " +
-        "  - wait { selector?, timeoutMs?, waitUntil? } to wait for page elements " +
-        "  - screenshot { fullPage? } to capture page state " +
-        "Example: launch Amazon with actions [navigate(url), type(search box, 'backpacks'), click(search button), wait(results), screenshot]. " +
-        "Use cdpScript only for complex, manual CDP operations not covered by structured actions. " +
-        "BROWSER SESSION CONTROL MAPPING: If the user asks to pause for human review, wait for them, let them log in, or stop for review, use browser_session launch with pauseForHuman=true, sessionMode='reusable', and keepAliveMs. " +
-        "If the user asks to pause on blocker, use pauseForHumanOnBlocker=true in reusable mode. " +
-        "If the user asks for recording, set recordingEnabled=true. " +
-        "If the user asks to keep the session alive, reuse it later, or resume an existing session, prefer reusable mode and use resume_browser_session or reuseSessionId instead of launching a fresh unrelated session. " +
-        "Never describe a screenshot as taken, a page as loaded, or a session as recorded unless the tool result in this turn explicitly contains screenshot data, a page title, or a session artifact reference. " +
-        // ── Screenshot data policy ────────────────────────────────────────────
-        "SCREENSHOT DATA POLICY — CRITICAL: When a browser_session result includes a \"_screenshotDataUrl\" field, that is a UI-rendered image for the user interface ONLY. " +
-        "You MUST NEVER copy, quote, reproduce, or include any base64-encoded data, data: URLs, or binary-encoded strings in your text response under any circumstances. " +
-        "When a screenshot was captured, simply write a short plain-text sentence like \"Here is the screenshot of <page name>.\" — the UI will display the actual image automatically. " +
-        // ── Task scheduling grounding rule ────────────────────────────────────
-        "TASK SCHEDULING GROUNDING RULE: For any request to create, schedule, remind, set up a recurring task, or similar, " +
-        "you MUST call the schedule_task tool and receive a successful result before telling the user the task was created. " +
-        "Never describe a task as scheduled, created, or set up unless the schedule_task tool was called and returned { \"created\": true } in this conversation turn. " +
-        "If you did not call schedule_task, respond with: \"I haven't scheduled the task yet — let me do that now.\" and call the tool immediately. " +
-        "After a successful schedule_task call, confirm the task by echoing the title, schedule type, and expression from the tool result — not from your prior reasoning. " +
-        "TASK LIST DISPLAY RULE: After calling list_tasks, you MUST display the actual task data returned by the tool. " +
-        "Present each task as a readable summary showing: title, schedule (type + expression), status, and next run time. " +
-        "If the list is empty, say so explicitly. Never respond with only a tool-call badge or 'Tools used: list_tasks' — the user cannot see raw tool output."
+        "Keep table headers short; align similar values in columns. " 
       ),
       memoryDescription: "Important durable facts learned across the conversation.",
       memoryMaxTokens: 4000,
@@ -2445,19 +2433,22 @@ export class MainAgent extends BaseThinkWithVoice {
     const availableToolNames = Object.keys(ctx.tools ?? {});
     const browserSearchPresent = availableToolNames.includes("browser_search");
     const browserExecutePresent = availableToolNames.includes("browser_execute");
-    const browserToolsPresent = browserSearchPresent && browserExecutePresent;
+
+    let chatBrowserToolsAllowed = this.enableBrowserTools;
     const userMessage = this.extractLatestUserMessageText(ctx.messages);
     // Do not assign _turnLatestUserMessage here — hooks.beforeTurn.run() runs a handler that
     // clears turn state (see constructor); assign after the hook so merge in browser_session
     // execute still sees the user text.
 
-    // Read browser executor preference from the client request body.
-    // The frontend sends { settings: { browserStepExecutor: "cdp" | "puppeteer" } }.
-    // Because beforeTurn fires before any tool execute() call, this value is picked up
-    // by the lazy getStepExecutor getter closed over by createBrowserSessionTool.
+    // Read chat feature flags and voice/browser preferences from the client request body.
+    // Main chat forwards `settings.enableBrowserTools`; when explicitly false we hide browser_* from
+    // activeTools while keeping wrangler/browser bindings unchanged (Agent Browsing is a separate agent).
     const bodySettings = ctx.body?.settings;
     if (bodySettings && typeof bodySettings === "object") {
       const s = bodySettings as Record<string, unknown>;
+      if (s.enableBrowserTools === false) {
+        chatBrowserToolsAllowed = false;
+      }
       if (s.agentShouldSpeak === true) {
         this._turnAgentShouldSpeakTts = true;
       }
@@ -2510,13 +2501,23 @@ export class MainAgent extends BaseThinkWithVoice {
       }
     }
 
+    this._chatBrowserToolsAllowedThisTurn = chatBrowserToolsAllowed;
+
+    const browserToolsPresent =
+      chatBrowserToolsAllowed && browserSearchPresent && browserExecutePresent;
+
+    const availableToolNamesForBrowserGuard = chatBrowserToolsAllowed
+      ? availableToolNames
+      : availableToolNames.filter((n) => !MAIN_CHAT_BROWSER_TOOL_NAMES.has(n));
+
     console.log("[EdgeClaw][turn-audit] beforeTurn called");
     console.log(`[EdgeClaw][turn-audit] User message length: ${userMessage.length}`);
     console.log(
       `[EdgeClaw][turn-audit] Tools available in TurnContext: ${availableToolNames.join(", ") || "(none)"}`
     );
     console.log(
-      `[EdgeClaw][turn-audit] browser_search=${browserSearchPresent} browser_execute=${browserExecutePresent}`
+      `[EdgeClaw][turn-audit] browser_search=${browserSearchPresent} browser_execute=${browserExecutePresent} ` +
+        `chatBrowserToolsAllowed=${chatBrowserToolsAllowed}`
     );
 
     // MCP turn audit: log per-server state and how many MCP tools reached this turn.
@@ -2547,7 +2548,7 @@ export class MainAgent extends BaseThinkWithVoice {
 
     const guardDecision = decideBrowserRequestGuard({
       userMessage,
-      availableToolNames,
+      availableToolNames: availableToolNamesForBrowserGuard,
     });
 
     const browserIntentDetected = isBrowserIntentRequest(userMessage);
@@ -2623,6 +2624,10 @@ export class MainAgent extends BaseThinkWithVoice {
     }
 
     if (guardDecision.shouldShortCircuit && !browserToolsPresent) {
+      const guardText =
+        this.enableBrowserTools && !chatBrowserToolsAllowed
+          ? BROWSER_TOOLS_DISABLED_IN_CHAT_SETTINGS_RESPONSE
+          : guardDecision.responseText ?? BROWSER_TOOLS_FALLBACK_RESPONSE;
       console.warn(
         "[EdgeClaw][turn-audit] Browser intent detected while browser tools are unavailable; returning deterministic fallback."
       );
@@ -2631,9 +2636,7 @@ export class MainAgent extends BaseThinkWithVoice {
       );
       return {
         ...baseConfig,
-        model: createDeterministicTextModel(
-          guardDecision.responseText ?? BROWSER_TOOLS_FALLBACK_RESPONSE
-        ),
+        model: createDeterministicTextModel(guardText),
         activeTools: [],
         toolChoice: "none",
         maxSteps: 1,
@@ -2750,6 +2753,13 @@ export class MainAgent extends BaseThinkWithVoice {
       console.error(`[EdgeClaw][workflow-notification] Failed to drain pending notifications: ${e}`);
     }
 
+    if (this.enableBrowserTools && !chatBrowserToolsAllowed) {
+      const prior = baseConfig.activeTools;
+      const source =
+        prior !== undefined && prior.length > 0 ? prior : availableToolNames;
+      baseConfig.activeTools = source.filter((n) => !MAIN_CHAT_BROWSER_TOOL_NAMES.has(n));
+    }
+
     return Object.keys(baseConfig).length > 0 ? baseConfig : undefined;
   }
 
@@ -2796,6 +2806,14 @@ export class MainAgent extends BaseThinkWithVoice {
    * otherwise returns `void` to allow normal execution.
    */
   async beforeToolCall(ctx: ToolCallContext): Promise<ToolCallDecision | void> {
+    if (MAIN_CHAT_BROWSER_TOOL_NAMES.has(ctx.toolName) && !this._chatBrowserToolsAllowedThisTurn) {
+      return {
+        action: "block",
+        reason:
+          "Browser tools are disabled for main chat (Settings → Enable browser tools). Use the Agent Browsing page for full browser automation.",
+      };
+    }
+
     if (this.enableBrowserToolDebug && this.isBrowserTool(ctx.toolName)) {
       this.logBrowserToolDebug("before", ctx.toolName, { input: ctx.input });
     }
@@ -3594,6 +3612,7 @@ export class MainAgent extends BaseThinkWithVoice {
     };
 
     const stub = await self.subAgent(agentClass, name);
+
     const safeMessage = truncateMessageForSubagentRpcInbound(message);
     // Outbound sub-agent RPC must not run while AsyncLocalStorage still attributes this isolate to
     // the parent WebSocket `connection` (common when `debugRunOrchestrationRpc` is invoked over
@@ -3608,6 +3627,7 @@ export class MainAgent extends BaseThinkWithVoice {
         email: undefined,
       },
       async () => {
+        let result: SubAgentResult;
         if (options.statelessSubAgentModelTurn === true) {
           const alt = stub.rpcCollectStatelessModelTurn;
           if (typeof alt !== "function") {
@@ -3615,9 +3635,11 @@ export class MainAgent extends BaseThinkWithVoice {
               "delegateTo: statelessSubAgentModelTurn requires the child class to expose @callable rpcCollectStatelessModelTurn (CoderAgent/TesterAgent)."
             );
           }
-          return alt.call(stub, safeMessage);
+          result = await alt.call(stub, safeMessage);
+        } else {
+          result = await stub.rpcCollectChatTurn(safeMessage);
         }
-        return stub.rpcCollectChatTurn(safeMessage);
+        return result;
       }
     );
   }
@@ -3721,16 +3743,24 @@ export class MainAgent extends BaseThinkWithVoice {
             runId: options.controlPlaneRunId,
           }
         : undefined;
-    let body =
-      options.sharedProjectId != null
-        ? formatSharedDelegationEnvelope(
-            options.sharedProjectId,
-            "coder",
-            message,
-            envelopeObs
-          )
-        : message;
+    let body: string;
     if (
+      options.debugBypassDelegationEnvelope === true &&
+      isDebugOrchestrationEnvEnabled(this.env)
+    ) {
+      body = message;
+    } else if (options.sharedProjectId != null) {
+      body = formatSharedDelegationEnvelope(
+        options.sharedProjectId,
+        "coder",
+        message,
+        envelopeObs
+      );
+    } else {
+      body = message;
+    }
+    if (
+      options.debugBypassDelegationEnvelope !== true &&
       options.debugDisableSharedWorkspaceTools === true &&
       isDebugOrchestrationEnvEnabled(this.env)
     ) {
@@ -3772,16 +3802,24 @@ export class MainAgent extends BaseThinkWithVoice {
             runId: options.controlPlaneRunId,
           }
         : undefined;
-    let body =
-      options.sharedProjectId != null
-        ? formatSharedDelegationEnvelope(
-            options.sharedProjectId,
-            "tester",
-            message,
-            envelopeObs
-          )
-        : message;
+    let body: string;
     if (
+      options.debugBypassDelegationEnvelope === true &&
+      isDebugOrchestrationEnvEnabled(this.env)
+    ) {
+      body = message;
+    } else if (options.sharedProjectId != null) {
+      body = formatSharedDelegationEnvelope(
+        options.sharedProjectId,
+        "tester",
+        message,
+        envelopeObs
+      );
+    } else {
+      body = message;
+    }
+    if (
+      options.debugBypassDelegationEnvelope !== true &&
       options.debugDisableSharedWorkspaceTools === true &&
       isDebugOrchestrationEnvEnabled(this.env)
     ) {
@@ -3992,6 +4030,12 @@ export class MainAgent extends BaseThinkWithVoice {
     const childTurn = runOptions?.childTurn ?? "normal";
     const disableShared = runOptions?.disableSharedWorkspaceTools === true;
     const stateless = childTurn === "stateless";
+    const loopMaxIterations =
+      typeof runOptions?.maxIterations === "number"
+        ? runOptions.maxIterations
+        : mode === "fail_revise"
+          ? 6
+          : 4;
     const cpProjectId = runOptions?.controlPlaneProjectId?.trim();
     const cpTaskIdRaw = runOptions?.controlPlaneTaskId?.trim();
     const cpTaskId = cpTaskIdRaw && cpTaskIdRaw.length > 0 ? cpTaskIdRaw : undefined;
@@ -4060,6 +4104,7 @@ export class MainAgent extends BaseThinkWithVoice {
           JSON.stringify({
             mode,
             childTurn,
+            loopMaxIterations,
             disableSharedWorkspaceTools: disableShared,
             controlPlaneProjectId: cpProjectId ?? null,
             controlPlaneTaskId: cpTaskId ?? null,
@@ -4128,7 +4173,7 @@ export class MainAgent extends BaseThinkWithVoice {
           loopResult = await this.runCodingCollaborationLoop({
             sharedProjectId,
             task: managerTask,
-            maxIterations: mode === "fail_revise" ? 6 : 4,
+            maxIterations: loopMaxIterations,
             autoApplyVerifiedPatches: true,
             scopeTesterToNewPatchesOnly: true,
             statelessSubAgentModelTurn: stateless,
@@ -4245,6 +4290,9 @@ export class MainAgent extends BaseThinkWithVoice {
       if (reason === "project_archived") return "project_archived";
       if (reason === "project_not_ready") return "project_not_ready";
       if (reason === "dependency_blocked") return "dependency_unmet";
+      if (reason === "forced_task_not_found") return "no_runnable_tasks";
+      if (reason === "forced_task_wrong_project") return "no_runnable_tasks";
+      if (reason === "forced_task_not_pickable") return "blocked";
       if (reason === "no_runnable_tasks") return "no_runnable_tasks";
       if (reason === "no_todo_tasks") {
         return "project_complete_candidate";
@@ -4256,7 +4304,9 @@ export class MainAgent extends BaseThinkWithVoice {
       s === "blocked_no_shared_workspace" || s === "stopped_aborted" || s === "completed_failure";
 
     for (let stepIndex = 0; stepIndex < input.maxSteps; stepIndex++) {
-      const pick = await pickNextRunnableTaskForProject(this.env, input.projectId);
+      const pick = await pickNextRunnableTaskForProject(this.env, input.projectId, {
+        forceTaskId: input.taskId?.trim(),
+      });
       if (!pick.ok) {
         explicitStop = await mapPickFailure(pick.reason);
         if (pick.reason === "dependency_blocked" && pick.skippedDueToDependencies?.length) {
@@ -4283,13 +4333,19 @@ export class MainAgent extends BaseThinkWithVoice {
           selectionReason: pick.selectionReason,
           stepIndex,
           sessionId: input.sessionId,
+          forcedTaskId: input.taskId?.trim() ?? null,
         })
       );
 
-      const runOptions = {
+      const runOptions: DebugOrchestrationRunOptions = {
         controlPlaneProjectId: input.projectId,
         controlPlaneTaskId: pick.task.taskId,
         sessionId: input.sessionId,
+        ...(input.childTurn != null ? { childTurn: input.childTurn } : {}),
+        ...(input.disableSharedWorkspaceTools === true ? { disableSharedWorkspaceTools: true } : {}),
+        ...(typeof input.codingLoopMaxIterations === "number"
+          ? { maxIterations: input.codingLoopMaxIterations }
+          : {}),
       };
 
       let outcome = await this.runDebugOrchestrationScenario(input.mode, "http", runOptions);

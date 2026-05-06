@@ -16,6 +16,7 @@ export const BLUEPRINT_FILE_KEYS = [
   "API_DESIGN.md",
   "AI_INSTRUCTIONS.md",
   "CONTEXT.md",
+  "FILE_STRUCTURE.md",
 ] as const;
 
 export type BlueprintFileKey = (typeof BLUEPRINT_FILE_KEYS)[number];
@@ -24,11 +25,13 @@ export type BlueprintFileKey = (typeof BLUEPRINT_FILE_KEYS)[number];
 export type BlueprintDocSourceState = "missing" | "template_only" | "edited" | "validated";
 
 /**
- * In-KV blueprint payload. \`docs\` keys use the same names as on-disk files for stable export/import.
- * \`schemaVersion\` reserved for forward-compatible evolution without rewriting all rows.
+ * In-KV blueprint payload. `docs` keys use the same names as on-disk files for stable export/import.
+ * `schemaVersion`: v2 requires FILE_STRUCTURE.md for “ready” validation; v1 matches legacy projects without it.
  */
+export type ProjectBlueprintSchemaVersion = 1 | 2;
+
 export interface ProjectBlueprint {
-  schemaVersion?: 1;
+  schemaVersion?: ProjectBlueprintSchemaVersion;
   docs: Partial<Record<BlueprintFileKey, string>>;
   /**
    * Exact bodies produced by “Generate templates” (after placeholder substitution).

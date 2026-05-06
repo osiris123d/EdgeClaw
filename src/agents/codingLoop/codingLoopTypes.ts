@@ -149,8 +149,8 @@ export interface CodingCollaborationLoopInput {
    */
   stalePatchIterationThreshold?: number;
   /**
-   * When true, coder/tester child RPC uses `rpcCollectStatelessModelTurn` (direct `generateText`, no
-   * Think `saveMessages` / `getMessages`). Intended for debug orchestration isolation — default false.
+   * When true, coder/tester child RPC uses `rpcCollectStatelessModelTurn` instead of stateful `rpcCollectChatTurn`.
+   * MainAgent / coordinator must pass `false` explicitly for normal orchestration (Think persistence path).
    */
   statelessSubAgentModelTurn?: boolean;
   /**
@@ -181,6 +181,11 @@ export interface CodingCollaborationLoopInput {
    * If omitted, {@link CodingCollaborationLoopHost.loopRunId} is used for delegation metadata.
    */
   controlPlaneRunId?: string;
+  /**
+   * When true, skip manager-side checks that pending patches only touch `staging/…`.
+   * Prefer adding `[ALLOW_DIRECT_REPO_PATHS]` to the task text when canonical paths are explicitly required.
+   */
+  allowImplementationPatchesOutsideStaging?: boolean;
   /** Optional hook for UI streaming / Workflow checkpoints. */
   onIterationComplete?(record: CodingIterationRecord): void | Promise<void>;
 }

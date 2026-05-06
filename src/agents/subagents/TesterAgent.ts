@@ -22,6 +22,7 @@ import {
 } from "./subagentToolSurface";
 import { getSharedWorkspaceGateway } from "../../workspace/sharedWorkspaceFactory";
 import { createSharedWorkspaceToolSet } from "../../workspace/sharedWorkspaceTools";
+import { TESTER_IMPLEMENTATION_PATH_POLICY_MARKDOWN } from "../codingLoop/codingLoopImplementationPaths";
 
 export class TesterAgent extends BaseSubAgentThink {
   constructor(ctx: DurableObjectState, env: Env, config: SubAgentThinkConfig = {}) {
@@ -67,7 +68,8 @@ export class TesterAgent extends BaseSubAgentThink {
         "You cannot write project files or change patch status (no write_staging, approve, reject, or apply). Store command output and conclusions with `shared_workspace_record_verification`. " +
         "If only `shared_workspace_unavailable` appears for shared tools, ask the parent to configure SHARED_WORKSPACE_KV. " +
         "Never describe deploys or production changes. `repo_git_*` tools are not available on this sub-agent. " +
-        "When the parent is a coding-loop orchestrator: keep chat brief; cite tools and patch ids; do not paste entire patch bodies or large files in prose.",
+        "When the parent is a coding-loop orchestrator: keep chat brief; cite tools and patch ids; do not paste entire patch bodies or large files in prose." +
+        TESTER_IMPLEMENTATION_PATH_POLICY_MARKDOWN,
       memoryDescription: "Tester-delegation findings for this sub-thread only.",
       memoryMaxTokens: 3500,
       additionalContexts: [

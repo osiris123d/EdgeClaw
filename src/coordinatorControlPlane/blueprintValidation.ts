@@ -6,6 +6,11 @@ export interface BlueprintValidationResult {
   errors: string[];
 }
 
+/** Effective blueprint schema for validation (persisted v2, else legacy v1). */
+export function blueprintEffectiveSchema(blueprint: ProjectBlueprint | undefined): 1 | 2 {
+  return blueprint?.schemaVersion === 2 ? 2 : 1;
+}
+
 /** Detects checklist items, bullets, or numbered lines typical of roadmap tasks. */
 export function roadmapHasTaskOrChecklistItem(markdown: string): boolean {
   const lines = markdown.split(/\n/);
@@ -25,14 +30,16 @@ function norm(s: string | undefined): string {
 }
 
 /**
- * v1 readiness (relaxed vs “all six non-empty”):
+ * Readiness:
  * - draft: no blueprint text in any file
  * - incomplete: some text exists but required bars not met
- * - ready: PROJECT_SPEC, ROADMAP (with task-like line), AI_INSTRUCTIONS, CONTEXT non-empty;
- *          at least one of DATA_MODELS or API_DESIGN non-empty
+ * - ready: PROJECT_SPEC, ROADMAP (task-like line), AI_INSTRUCTIONS, CONTEXT non-empty;
+ *          at least one of DATA_MODELS or API_DESIGN non-empty;
+ *          when schemaVersion === 2, FILE_STRUCTURE.md must also be non-empty (substantive).
  */
 export function validateProjectBlueprint(blueprint: ProjectBlueprint | undefined): BlueprintValidationResult {
   const docs = blueprint?.docs ?? {};
+  const schema = blueprintEffectiveSchema(blueprint);
   const anyContent = BLUEPRINT_FILE_KEYS.some((k) => norm(docs[k]).length > 0);
   if (!anyContent) {
     return { readiness: "draft", errors: [] };
@@ -45,6 +52,7 @@ export function validateProjectBlueprint(blueprint: ProjectBlueprint | undefined
   const ctx = norm(docs["CONTEXT.md"]);
   const dm = norm(docs["DATA_MODELS.md"]);
   const api = norm(docs["API_DESIGN.md"]);
+  const fileStructure = norm(docs["FILE_STRUCTURE.md"]);
 
   if (!spec) errors.push("PROJECT_SPEC.md must not be empty.");
   if (!roadmap) errors.push("ROADMAP.md must not be empty.");
@@ -57,6 +65,13 @@ export function validateProjectBlueprint(blueprint: ProjectBlueprint | undefined
   if (!ctx) errors.push("CONTEXT.md must not be empty.");
   if (!dm && !api) {
     errors.push("At least one of DATA_MODELS.md or API_DESIGN.md must be non-empty.");
+  }
+  if (schema >= 2) {
+    if (!fileStructure) {
+      errors.push("FILE_STRUCTURE.md must not be empty (required for blueprint schema v2).");
+    } else if (fileStructure.length < 20) {
+      errors.push("FILE_STRUCTURE.md must be substantive (template or edited content).");
+    }
   }
 
   if (errors.length > 0) {

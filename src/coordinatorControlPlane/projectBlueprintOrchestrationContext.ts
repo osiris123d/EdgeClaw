@@ -22,6 +22,7 @@ export interface ProjectBlueprintContextPackage {
     apiDesign: string;
     aiInstructions: string;
     context: string;
+    fileStructure: string;
   };
 }
 
@@ -80,6 +81,7 @@ export function buildContextPackageFromProject(project: CoordinatorProject): Pro
       apiDesign: d["API_DESIGN.md"] ?? "",
       aiInstructions: d["AI_INSTRUCTIONS.md"] ?? "",
       context: d["CONTEXT.md"] ?? "",
+      fileStructure: d["FILE_STRUCTURE.md"] ?? "",
     },
   };
 }
@@ -117,6 +119,9 @@ export function formatBlueprintContextForPrompt(pkg: ProjectBlueprintContextPack
     "",
     "## CONTEXT.md",
     pkg.blueprint.context.trim() || "(empty)",
+    "",
+    "## FILE_STRUCTURE.md",
+    pkg.blueprint.fileStructure.trim() || "(empty)",
   ];
   let body = sections.join("\n");
   if (body.length > MAX_CONTEXT_CHARS) {
