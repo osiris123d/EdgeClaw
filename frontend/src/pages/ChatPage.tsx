@@ -125,6 +125,40 @@ function uniqueDetailLines(lines: string[]): string[] {
   return [...new Set(lines.map((line) => line.trim()).filter(Boolean))];
 }
 
+/** Cap raw tool JSON in Reasoning → Show details — keeps DOM and merges responsive. */
+const TOOL_DETAIL_OUTPUT_MAX_CHARS = 14_000;
+
+function truncateDetailBlock(text: string, maxChars: number): string {
+  const trimmed = text.trimEnd();
+  if (trimmed.length <= maxChars) return trimmed;
+  const omitted = trimmed.length - maxChars;
+  return `${trimmed.slice(0, maxChars)}\n… [truncated ${omitted} more characters]`;
+}
+
+/** Pretty-print tool output for MCP / Code Mode chains; safe on circular refs / huge blobs. */
+function stringifyToolOutputForDetails(output: unknown): string | undefined {
+  try {
+    if (output === undefined || output === null) return undefined;
+    if (typeof output === "string") {
+      const t = output.trim();
+      return t.length > 0 ? truncateDetailBlock(t, TOOL_DETAIL_OUTPUT_MAX_CHARS) : undefined;
+    }
+    if (
+      typeof output === "number" ||
+      typeof output === "boolean" ||
+      typeof output === "bigint"
+    ) {
+      return String(output);
+    }
+    if (typeof output === "symbol" || typeof output === "function") return undefined;
+    const json = JSON.stringify(output, null, 2);
+    if (!json || json === "{}" || json === "[]") return undefined;
+    return truncateDetailBlock(json, TOOL_DETAIL_OUTPUT_MAX_CHARS);
+  } catch {
+    return undefined;
+  }
+}
+
 function toBrowserToolResult(output: unknown): BrowserToolResult | undefined {
   return isBrowserToolResult(output) ? output : undefined;
 }
@@ -175,6 +209,13 @@ function buildDetailLinesFromToolPart(part: ProtocolMessageLike["parts"][number]
   }
   if (part.text) {
     lines.push(part.text);
+  }
+
+  // Code Mode / MCP tools: expose structured output under "Show details" (agents-starter parity).
+  // Skip when browser helpers matched — stringify could embed huge screenshots or duplicate fields.
+  if (!browserResult && !sessionResult) {
+    const jsonBlock = stringifyToolOutputForDetails(part.output);
+    if (jsonBlock) lines.push(jsonBlock);
   }
 
   const deduped = uniqueDetailLines(lines);
