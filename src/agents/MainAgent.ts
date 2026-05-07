@@ -1241,7 +1241,15 @@ export class MainAgent extends BaseThinkWithVoice {
     }
 
     const text = (turn.message || "").toLowerCase();
-    return /\b(search|browse|open|navigate|fetch|execute|run|read file|list|query)\b/.test(text);
+    // Starter-style MCP/Code Mode prompts often omit words like "list" but still need live APIs
+    // ("provide/show me...", Zero Trust posture, WARP tenant state, etc.).
+    return (
+      /\b(?:search|browse|open|navigate|fetch|execute|run|read file|list|query|provide|retrieve|pull|export)\b/.test(
+        text,
+      ) ||
+      /\b(?:what are|give me|tell me|show me)\b/.test(text) ||
+      /\b(?:device posture|posture integration|cloudflare warp|warp connector|zero trust)\b/.test(text)
+    );
   }
 
   /**

@@ -23,7 +23,13 @@ function isBrowserIntentRequest(text) {
 
 function inferLikelyToolUsage(message) {
   const text = (message || "").toLowerCase();
-  return /\b(search|browse|open|navigate|fetch|execute|run|read file|list|query)\b/.test(text);
+  return (
+    /\b(?:search|browse|open|navigate|fetch|execute|run|read file|list|query|provide|retrieve|pull|export)\b/.test(
+      text,
+    ) ||
+    /\b(?:what are|give me|tell me|show me)\b/.test(text) ||
+    /\b(?:device posture|posture integration|cloudflare warp|warp connector|zero trust)\b/.test(text)
+  );
 }
 
 function inferComplexity(message) {
@@ -244,4 +250,12 @@ test("non-browser plain question routes to utility", () => {
 
 test("'analyze this image' routes to vision not tools", () => {
   assertEqual(classifyRouteClass("analyze this image for me"), "vision");
+});
+
+test("Cloudflare Zero Trust posture phrasing routes to tools (MCP / Code Mode retrieval)", () => {
+  assertEqual(
+    classifyRouteClass("Please provide me all the Device Posture checks I have configured with Cloudflare Warp"),
+    "tools",
+  );
+  assertEqual(classifyRouteClass("list my zero trust posture rules"), "tools");
 });
