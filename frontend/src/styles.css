@@ -613,31 +613,43 @@ button.chat-status-badge.mcp-pill-cta {
 }
 
 .turn-status-dot.status-thinking,
-.turn-status-label.status-thinking,
-.turn-status-dot.status-finalizing,
-.turn-status-label.status-finalizing {
-  color: #466b7f;
+.turn-status-dot.status-finalizing {
   background: #466b7f;
 }
 
+.turn-status-label.status-thinking,
+.turn-status-label.status-finalizing {
+  color: #466b7f;
+  background: transparent;
+}
+
 .turn-status-dot.status-using_tools,
-.turn-status-label.status-using_tools,
-.turn-status-dot.status-awaiting_approval,
-.turn-status-label.status-awaiting_approval {
-  color: #8b6b2e;
+.turn-status-dot.status-awaiting_approval {
   background: #8b6b2e;
 }
 
-.turn-status-dot.status-done,
-.turn-status-label.status-done {
-  color: #3e7656;
+.turn-status-label.status-using_tools,
+.turn-status-label.status-awaiting_approval {
+  color: #8b6b2e;
+  background: transparent;
+}
+
+.turn-status-dot.status-done {
   background: #3e7656;
 }
 
-.turn-status-dot.status-failed,
+.turn-status-label.status-done {
+  color: #3e7656;
+  background: transparent;
+}
+
+.turn-status-dot.status-failed {
+  background: #8e3a3a;
+}
+
 .turn-status-label.status-failed {
   color: #8e3a3a;
-  background: #8e3a3a;
+  background: transparent;
 }
 
 .turn-status-divider {
