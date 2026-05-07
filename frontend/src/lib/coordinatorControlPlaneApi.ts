@@ -411,13 +411,119 @@ export type CoordinatorAiGatewayRunLogsResponse =
       version?: number;
     };
 
+/** Rollup from Worker AI Gateway log aggregation (metadata filter + pagination). */
+export type CoordinatorAiGatewayRollup =
+  | {
+      ok: true;
+      tokensIn: number;
+      tokensOut: number;
+      totalCost: number;
+      entryCount: number;
+      truncated: boolean;
+      pagesFetched: number;
+    }
+  | { ok: false; error: string; hint?: string };
+
+export type CoordinatorProjectGatewayUsageBatchResponse = {
+  ok: true;
+  version?: number;
+  maxPagesPerProject: number;
+  projects: Record<string, CoordinatorAiGatewayRollup>;
+};
+
+export type CoordinatorSubagentGatewayUsageResponse = {
+  ok: true;
+  version?: number;
+  maxPages: number;
+  CoderAgent: CoordinatorAiGatewayRollup;
+  TesterAgent: CoordinatorAiGatewayRollup;
+};
+
+async function parseJsonResponse<T>(res: Response, fallback: T): Promise<T> {
+  const text = await res.text();
+  try {
+    return text ? (JSON.parse(text) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/** Sum AI Gateway usage for many control-plane projects (`metadata.project` on gateway requests). */
+export async function getCoordinatorProjectGatewayUsageBatch(
+  projectIds: readonly string[],
+  options?: { maxPages?: number; signal?: AbortSignal }
+): Promise<
+  CoordinatorProjectGatewayUsageBatchResponse | { ok: false; error: string }
+> {
+  const ids = [...new Set(projectIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    return { ok: true, maxPagesPerProject: 0, projects: {} };
+  }
+  const q = new URLSearchParams({ ids: ids.join(",") });
+  if (options?.maxPages != null) {
+    q.set("maxPages", String(Math.min(100, Math.max(1, options.maxPages))));
+  }
+  const res = await fetch(`/api/coordinator/ai-gateway/project-usage?${q}`, {
+    signal: options?.signal,
+    headers: { Accept: "application/json" },
+  });
+  const body = await parseJsonResponse<unknown>(res, null);
+  if (!res.ok) {
+    const err =
+      typeof body === "object" && body !== null && "error" in body
+        ? String((body as { error?: unknown }).error)
+        : `HTTP ${res.status}`;
+    return { ok: false, error: err };
+  }
+  if (typeof body !== "object" || body === null || (body as { ok?: unknown }).ok !== true) {
+    return { ok: false, error: "Unexpected project-usage response" };
+  }
+  const b = body as CoordinatorProjectGatewayUsageBatchResponse;
+  return {
+    ok: true,
+    version: b.version,
+    maxPagesPerProject:
+      typeof b.maxPagesPerProject === "number" ? b.maxPagesPerProject : 30,
+    projects: typeof b.projects === "object" && b.projects !== null ? b.projects : {},
+  };
+}
+
+/** Totals for sub-agent DO classes via `metadata.agent` on AI Gateway (CoderAgent, TesterAgent). */
+export async function getCoordinatorSubagentGatewayUsage(
+  options?: { maxPages?: number; signal?: AbortSignal }
+): Promise<
+  CoordinatorSubagentGatewayUsageResponse | { ok: false; error: string }
+> {
+  const q = new URLSearchParams();
+  if (options?.maxPages != null) {
+    q.set("maxPages", String(Math.min(100, Math.max(1, options.maxPages))));
+  }
+  const url = `/api/coordinator/ai-gateway/subagent-usage${q.toString() ? `?${q}` : ""}`;
+  const res = await fetch(url, {
+    signal: options?.signal,
+    headers: { Accept: "application/json" },
+  });
+  const body = await parseJsonResponse<unknown>(res, null);
+  if (!res.ok) {
+    const err =
+      typeof body === "object" && body !== null && "error" in body
+        ? String((body as { error?: unknown }).error)
+        : `HTTP ${res.status}`;
+    return { ok: false, error: err };
+  }
+  if (typeof body !== "object" || body === null || (body as { ok?: unknown }).ok !== true) {
+    return { ok: false, error: "Unexpected subagent-usage response" };
+  }
+  return body as CoordinatorSubagentGatewayUsageResponse;
+}
+
 /** Proxied Cloudflare AI Gateway list logs filtered by metadata `run` = control-plane run id. */
 export async function getCoordinatorAiGatewayRunLogs(
   runId: string,
   limit = 50,
   signal?: AbortSignal
 ): Promise<CoordinatorAiGatewayRunLogsResponse> {
-  const q = new URLSearchParams({ limit: String(Math.min(100, Math.max(1, limit))) });
+  const q = new URLSearchParams({ limit: String(Math.min(50, Math.max(1, limit))) });
   const res = await fetch(
     `/api/coordinator/ai-gateway/runs/${encodeURIComponent(runId)}/logs?${q}`,
     { signal, headers: { Accept: "application/json" } }

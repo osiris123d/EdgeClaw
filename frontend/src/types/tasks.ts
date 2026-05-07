@@ -129,7 +129,8 @@ export const SCHEDULE_TYPE_OPTIONS: ReadonlyArray<ScheduleTypeOption> = [
   {
     value:       "interval",
     label:       "Interval",
-    hint:        "e.g. every 30m · every 2h · every 1d",
+    hint:
+      "Enter a phrase here (repeat every …), not cron. Examples: every 30m · every 2h · every 1d.",
     placeholder: "every 1h",
   },
   {

@@ -120,9 +120,11 @@ describe("Schedule summary preview", () => {
     expect(screen.getByRole("status")).toHaveTextContent("America/Chicago");
   });
 
-  it("empty expression produces no preview", () => {
+  it("empty interval expression produces no preview", () => {
     renderCreate();
-    // Expression starts empty; no preview element should be rendered.
+    fireEvent.change(screen.getByLabelText(/^expression/i), {
+      target: { value: "" },
+    });
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 });
@@ -132,6 +134,8 @@ describe("Schedule summary preview", () => {
 describe("Form validation", () => {
   it("submitting an empty form shows required-field errors for all three required fields", () => {
     renderCreate();
+    const exprInput = screen.getByLabelText(/^expression/i);
+    fireEvent.change(exprInput, { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     const alerts = screen.getAllByRole("alert");

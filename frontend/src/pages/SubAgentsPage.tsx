@@ -6,6 +6,8 @@ import {
   deleteCoordinatorProject,
   deleteCoordinatorTask,
   getCoordinatorAiGatewayRunLogs,
+  getCoordinatorProjectGatewayUsageBatch,
+  getCoordinatorSubagentGatewayUsage,
   getCoordinatorHealth,
   getCoordinatorProject,
   listCoordinatorProjects,
@@ -23,10 +25,12 @@ import { CoordinatorReviewPanel } from "../components/coordinator/CoordinatorRev
 import { EditCoordinatorTaskDialog } from "../components/coordinator/EditCoordinatorTaskDialog";
 import { ProjectBlueprintDialog } from "../components/coordinator/ProjectBlueprintDialog";
 import type {
+  CoordinatorAiGatewayRollup,
   CoordinatorAiGatewayRunLogsResponse,
   CoordinatorHealthResponse,
   CoordinatorMaterializeMappingPreset,
   CoordinatorMaterializePreviewResponse,
+  CoordinatorSubagentGatewayUsageResponse,
 } from "../lib/coordinatorControlPlaneApi";
 import type {
   CoordinatorProject,
@@ -70,6 +74,11 @@ function fmtDate(iso?: string): string {
   } catch {
     return iso;
   }
+}
+
+function fmtUsd(cost: number): string {
+  if (!Number.isFinite(cost)) return "—";
+  return `$${cost.toFixed(4)}`;
 }
 
 function projectDisplayName(p: CoordinatorProject): string {
@@ -307,6 +316,17 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
   const [runsInspectorRunId, setRunsInspectorRunId] = useState<string | null>(null);
   const [gatewayLogs, setGatewayLogs] = useState<CoordinatorAiGatewayRunLogsResponse | null>(null);
   const [gatewayLogsBusy, setGatewayLogsBusy] = useState(false);
+  /** Monitor → Projects: AI Gateway rollup per registry project (`metadata.project`). */
+  const [monitorProjectGatewayById, setMonitorProjectGatewayById] = useState<
+    Record<string, CoordinatorAiGatewayRollup | undefined>
+  >({});
+  const [monitorProjectGatewayLoading, setMonitorProjectGatewayLoading] = useState(false);
+  const [monitorProjectGatewayBatchError, setMonitorProjectGatewayBatchError] = useState<string | null>(null);
+  /** Monitor → Agents: AI Gateway rollup by `metadata.agent` (CoderAgent / TesterAgent). */
+  const [monitorSubagentGateway, setMonitorSubagentGateway] =
+    useState<CoordinatorSubagentGatewayUsageResponse | null>(null);
+  const [monitorSubagentGatewayLoading, setMonitorSubagentGatewayLoading] = useState(false);
+  const [monitorSubagentGatewayError, setMonitorSubagentGatewayError] = useState<string | null>(null);
   const [rpcStatus, setRpcStatus] = useState<"idle" | "connecting" | "connected" | "disconnected">("idle");
   const rpcClientRef = useRef<AgentClient | null>(null);
   const bannerTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -343,6 +363,66 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       flash(e instanceof Error ? e.message : "Projects load failed", "error");
     } finally {
       setRegistryLoading(false);
+    }
+  }, [flash]);
+
+  useEffect(() => {
+    setMonitorProjectGatewayById((prev) => {
+      const allowed = new Set(projects.map((p) => p.projectId));
+      const next: Record<string, CoordinatorAiGatewayRollup | undefined> = {};
+      for (const id of allowed) {
+        if (prev[id] !== undefined) next[id] = prev[id];
+      }
+      return next;
+    });
+  }, [projects]);
+
+  const refreshMonitorProjectGatewayUsage = useCallback(async () => {
+    const ids = projects.map((p) => p.projectId);
+    if (ids.length === 0) {
+      flash("No registry projects to query.", "error");
+      return;
+    }
+    setMonitorProjectGatewayLoading(true);
+    setMonitorProjectGatewayBatchError(null);
+    try {
+      const res = await getCoordinatorProjectGatewayUsageBatch(ids);
+      if (!res.ok) {
+        setMonitorProjectGatewayBatchError(res.error);
+        flash(res.error, "error");
+        return;
+      }
+      const next: Record<string, CoordinatorAiGatewayRollup | undefined> = {};
+      for (const id of ids) {
+        next[id] = res.projects[id];
+      }
+      setMonitorProjectGatewayById(next);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMonitorProjectGatewayBatchError(msg);
+      flash(msg, "error");
+    } finally {
+      setMonitorProjectGatewayLoading(false);
+    }
+  }, [projects, flash]);
+
+  const refreshMonitorSubagentGatewayUsage = useCallback(async () => {
+    setMonitorSubagentGatewayLoading(true);
+    setMonitorSubagentGatewayError(null);
+    try {
+      const res = await getCoordinatorSubagentGatewayUsage();
+      if (!res.ok) {
+        setMonitorSubagentGatewayError(res.error);
+        flash(res.error, "error");
+        return;
+      }
+      setMonitorSubagentGateway(res);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setMonitorSubagentGatewayError(msg);
+      flash(msg, "error");
+    } finally {
+      setMonitorSubagentGatewayLoading(false);
     }
   }, [flash]);
 
@@ -1250,6 +1330,42 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
       .sort((a, b) => (b.rollup.runCount ?? 0) - (a.rollup.runCount ?? 0));
   }, [projects, runs]);
 
+  const monitorProjectsGatewayTotals = useMemo(() => {
+    let tokensIn = 0;
+    let tokensOut = 0;
+    let totalCost = 0;
+    let truncated = false;
+    let hasLoaded = false;
+    let loadErrorProjects = 0;
+    for (const p of projects) {
+      const r = monitorProjectGatewayById[p.projectId];
+      if (r === undefined) continue;
+      hasLoaded = true;
+      if (r.ok) {
+        tokensIn += r.tokensIn;
+        tokensOut += r.tokensOut;
+        totalCost += r.totalCost;
+        truncated = truncated || r.truncated;
+      } else {
+        loadErrorProjects += 1;
+      }
+    }
+    return { tokensIn, tokensOut, totalCost, truncated, hasLoaded, loadErrorProjects };
+  }, [projects, monitorProjectGatewayById]);
+
+  const monitorSubagentGatewayCombined = useMemo(() => {
+    if (!monitorSubagentGateway) return null;
+    const c = monitorSubagentGateway.CoderAgent;
+    const t = monitorSubagentGateway.TesterAgent;
+    if (!c.ok || !t.ok) return null;
+    return {
+      tokensIn: c.tokensIn + t.tokensIn,
+      tokensOut: c.tokensOut + t.tokensOut,
+      totalCost: c.totalCost + t.totalCost,
+      truncated: c.truncated || t.truncated,
+    };
+  }, [monitorSubagentGateway]);
+
   const monitorTimeline = useMemo(() => {
     return [...runs].sort(
       (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
@@ -1684,6 +1800,107 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
                   </p>
                 </div>
               </div>
+
+              <p style={{ marginTop: 20, marginBottom: 6 }}>
+                <strong>AI Gateway usage</strong> (<code>metadata.agent</code>)
+              </p>
+              <p className="muted small" style={{ marginTop: 4 }}>
+                Totals come from gateway logs filtered by agent class (CoderAgent / TesterAgent). Other traffic without
+                that tag does not appear here; high-volume gateways may truncate unless you raise{" "}
+                <code>maxPages</code> on the Worker.
+              </p>
+              <div className="coord-projects-toolbar" style={{ marginTop: 10, marginBottom: 12 }}>
+                <button
+                  type="button"
+                  className="btn-header-secondary coord-small-btn"
+                  disabled={monitorSubagentGatewayLoading}
+                  onClick={() => void refreshMonitorSubagentGatewayUsage()}
+                >
+                  {monitorSubagentGatewayLoading ? "Loading gateway totals…" : "Refresh AI Gateway totals"}
+                </button>
+                {monitorSubagentGatewayError ? (
+                  <span className="coord-badge coord-badge-warn" style={{ marginLeft: 8 }}>
+                    {monitorSubagentGatewayError}
+                  </span>
+                ) : null}
+              </div>
+              <div className="coord-monitor-overview-grid">
+                {(
+                  [
+                    ["CoderAgent", monitorSubagentGateway?.CoderAgent] as const,
+                    ["TesterAgent", monitorSubagentGateway?.TesterAgent] as const,
+                  ] as const
+                ).map(([label, rollup]) => (
+                  <div key={label} className="coord-stat-card">
+                    <span className="coord-stat-label">{label}</span>
+                    {!rollup ? (
+                      <span className="coord-stat-value muted">—</span>
+                    ) : !rollup.ok ? (
+                      <span className="coord-stat-value coord-badge coord-badge-warn" title={rollup.hint}>
+                        {rollup.error}
+                      </span>
+                    ) : (
+                      <span className="coord-stat-value">{fmtUsd(rollup.totalCost)}</span>
+                    )}
+                    <p className="muted small" style={{ marginTop: 6 }}>
+                      {rollup && rollup.ok ? (
+                        <>
+                          Tokens in: {rollup.tokensIn.toLocaleString()} · Tokens out:{" "}
+                          {rollup.tokensOut.toLocaleString()}
+                          {rollup.truncated ? (
+                            <>
+                              {" "}
+                              · <span title="Paged gateway log fetch hit cap">partial *</span>
+                            </>
+                          ) : null}
+                          {rollup.entryCount > 0 ? (
+                            <>
+                              {" "}
+                              · {rollup.entryCount.toLocaleString()} log rows
+                            </>
+                          ) : null}
+                        </>
+                      ) : (
+                        "Use Refresh to load gateway totals."
+                      )}
+                    </p>
+                  </div>
+                ))}
+                <div className="coord-stat-card">
+                  <span className="coord-stat-label">Coder + Tester (gateway)</span>
+                  {!monitorSubagentGatewayCombined ? (
+                    <span className="coord-stat-value muted">—</span>
+                  ) : (
+                    <span className="coord-stat-value">{fmtUsd(monitorSubagentGatewayCombined.totalCost)}</span>
+                  )}
+                  <p className="muted small" style={{ marginTop: 6 }}>
+                    {monitorSubagentGatewayCombined ? (
+                      <>
+                        Tokens in: {monitorSubagentGatewayCombined.tokensIn.toLocaleString()} · Tokens out:{" "}
+                        {monitorSubagentGatewayCombined.tokensOut.toLocaleString()}
+                        {monitorSubagentGatewayCombined.truncated ? (
+                          <>
+                            {" "}
+                            · <span title="At least one side hit page cap">partial *</span>
+                          </>
+                        ) : null}
+                      </>
+                    ) : monitorSubagentGateway?.CoderAgent && monitorSubagentGateway.TesterAgent ? (
+                      <>
+                        Combined total unavailable —
+                        {!monitorSubagentGateway.CoderAgent.ok && !monitorSubagentGateway.TesterAgent.ok
+                          ? " fix errors on both roles."
+                          : !monitorSubagentGateway.CoderAgent.ok
+                            ? " fix Coder error."
+                            : " fix Tester error."}
+                      </>
+                    ) : (
+                      "Use Refresh to load gateway totals."
+                    )}
+                  </p>
+                </div>
+              </div>
+
               <p className="muted small" style={{ marginTop: 16 }}>
                 Runs by stored <code>source</code> (control-plane run records):
               </p>
@@ -1745,7 +1962,47 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
           {monitorSubTab === "projects" && (
             <section className="coord-panel">
               <h3 className="coord-panel-title">Projects</h3>
-              <p className="muted small">Per-project run counts from local coordinator run list.</p>
+              <p className="muted small">
+                Run counts come from local coordinator history. AI Gateway totals use <code>metadata.project</code> on
+                gateway requests — refresh to pull recent logs (MainAgent-only chat without that tag won’t roll up).
+              </p>
+              <div className="coord-projects-toolbar" style={{ marginBottom: 10 }}>
+                <button
+                  type="button"
+                  className="btn-header-secondary coord-small-btn"
+                  disabled={monitorProjectGatewayLoading || projects.length === 0}
+                  onClick={() => void refreshMonitorProjectGatewayUsage()}
+                >
+                  {monitorProjectGatewayLoading ? "Loading gateway usage…" : "Refresh AI Gateway usage"}
+                </button>
+                {monitorProjectGatewayBatchError ? (
+                  <span className="coord-badge coord-badge-warn" style={{ marginLeft: 8 }}>
+                    {monitorProjectGatewayBatchError}
+                  </span>
+                ) : null}
+              </div>
+              {monitorProjectsGatewayTotals.hasLoaded ? (
+                <p className="muted small" style={{ marginBottom: 12 }}>
+                  <strong>Overall (registry projects, gateway)</strong> — tokens in{" "}
+                  {monitorProjectsGatewayTotals.tokensIn.toLocaleString()}, tokens out{" "}
+                  {monitorProjectsGatewayTotals.tokensOut.toLocaleString()}, est. cost{" "}
+                  {fmtUsd(monitorProjectsGatewayTotals.totalCost)}
+                  {monitorProjectsGatewayTotals.truncated ? (
+                    <span title="At least one project hit the log page cap"> · partial *</span>
+                  ) : null}
+                  {monitorProjectsGatewayTotals.loadErrorProjects > 0 ? (
+                    <span>
+                      {" "}
+                      · {monitorProjectsGatewayTotals.loadErrorProjects} project
+                      {monitorProjectsGatewayTotals.loadErrorProjects === 1 ? "" : "s"} failed (see row)
+                    </span>
+                  ) : null}
+                </p>
+              ) : (
+                <p className="muted small" style={{ marginBottom: 12 }}>
+                  Click <strong>Refresh AI Gateway usage</strong> to load per-project token and cost totals.
+                </p>
+              )}
               {monitorProjectRollup.length === 0 ? (
                 <div className="tasks-empty-state coord-empty">
                   <p>No registry projects.</p>
@@ -1760,36 +2017,106 @@ export function SubAgentsPage({ wsEndpoint, sessionId }: SubAgentsPageProps) {
                         <th className="tasks-th tasks-th-type">Tasks</th>
                         <th className="tasks-th tasks-th-type">Runs recorded</th>
                         <th className="tasks-th tasks-th-date">Latest run</th>
+                        <th className="tasks-th tasks-th-type">Tokens in</th>
+                        <th className="tasks-th tasks-th-type">Tokens out</th>
+                        <th className="tasks-th tasks-th-type">Est. cost</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {monitorProjectRollup.map(({ project, rollup }) => (
-                        <tr key={project.projectId} className="tasks-row">
-                          <td className="tasks-td tasks-td-title">
-                            <strong>{projectDisplayName(project)}</strong>
-                            <div className="muted small">
-                              <code>{project.projectId}</code>
-                            </div>
-                          </td>
-                          <td className="tasks-td tasks-td-type">
-                            <span className={readinessBadgeClass(project.readiness)}>{project.readiness}</span>
-                          </td>
-                          <td className="tasks-td tasks-td-type">
-                            {projectTaskCountsLoading ? (
-                              "…"
-                            ) : (
-                              projectTaskCounts[project.projectId] ?? "—"
-                            )}
-                          </td>
-                          <td className="tasks-td tasks-td-type">{rollup.runCount}</td>
-                          <td className="tasks-td tasks-td-date">
-                            {rollup.latest
-                              ? fmtDate(rollup.latest.finishedAt ?? rollup.latest.startedAt)
-                              : "—"}
-                          </td>
-                        </tr>
-                      ))}
+                      {monitorProjectRollup.map(({ project, rollup }) => {
+                        const gw = monitorProjectGatewayById[project.projectId];
+                        return (
+                          <tr key={project.projectId} className="tasks-row">
+                            <td className="tasks-td tasks-td-title">
+                              <strong>{projectDisplayName(project)}</strong>
+                              <div className="muted small">
+                                <code>{project.projectId}</code>
+                              </div>
+                            </td>
+                            <td className="tasks-td tasks-td-type">
+                              <span className={readinessBadgeClass(project.readiness)}>{project.readiness}</span>
+                            </td>
+                            <td className="tasks-td tasks-td-type">
+                              {projectTaskCountsLoading ? "…" : projectTaskCounts[project.projectId] ?? "—"}
+                            </td>
+                            <td className="tasks-td tasks-td-type">{rollup.runCount}</td>
+                            <td className="tasks-td tasks-td-date">
+                              {rollup.latest
+                                ? fmtDate(rollup.latest.finishedAt ?? rollup.latest.startedAt)
+                                : "—"}
+                            </td>
+                            <td className="tasks-td tasks-td-type">
+                              {gw === undefined ? (
+                                <span className="muted">—</span>
+                              ) : !gw.ok ? (
+                                <span className="coord-badge coord-badge-warn" title={gw.hint}>
+                                  {gw.error}
+                                </span>
+                              ) : (
+                                <>
+                                  {gw.tokensIn.toLocaleString()}
+                                  {gw.truncated ? (
+                                    <span className="muted" title="Partial sum — log paging cap">
+                                      {" "}
+                                      *
+                                    </span>
+                                  ) : null}
+                                </>
+                              )}
+                            </td>
+                            <td className="tasks-td tasks-td-type">
+                              {gw === undefined ? (
+                                <span className="muted">—</span>
+                              ) : !gw.ok ? (
+                                <span className="coord-badge coord-badge-warn">—</span>
+                              ) : (
+                                <>
+                                  {gw.tokensOut.toLocaleString()}
+                                  {gw.truncated ? (
+                                    <span className="muted" title="Partial sum — log paging cap">
+                                      {" "}
+                                      *
+                                    </span>
+                                  ) : null}
+                                </>
+                              )}
+                            </td>
+                            <td className="tasks-td tasks-td-type">
+                              {gw === undefined ? (
+                                <span className="muted">—</span>
+                              ) : !gw.ok ? (
+                                <span className="coord-badge coord-badge-warn">—</span>
+                              ) : (
+                                <span title={gw.entryCount > 0 ? `${gw.entryCount} log rows` : undefined}>
+                                  {fmtUsd(gw.totalCost)}
+                                  {gw.truncated ? " *" : ""}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
+                    {monitorProjectsGatewayTotals.hasLoaded ? (
+                      <tfoot>
+                        <tr className="tasks-row">
+                          <td className="tasks-td" colSpan={5}>
+                            <strong>Overall</strong>
+                            <span className="muted small" style={{ marginLeft: 8 }}>
+                              Summed gateway rows above
+                              {monitorProjectsGatewayTotals.truncated ? " (may be partial *)" : ""}
+                            </span>
+                          </td>
+                          <td className="tasks-td tasks-td-type">
+                            {monitorProjectsGatewayTotals.tokensIn.toLocaleString()}
+                          </td>
+                          <td className="tasks-td tasks-td-type">
+                            {monitorProjectsGatewayTotals.tokensOut.toLocaleString()}
+                          </td>
+                          <td className="tasks-td tasks-td-type">{fmtUsd(monitorProjectsGatewayTotals.totalCost)}</td>
+                        </tr>
+                      </tfoot>
+                    ) : null}
                   </table>
                 </div>
               )}

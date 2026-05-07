@@ -37,7 +37,8 @@ function initState(task: ScheduledTask | null | undefined): TaskFormState {
       description:        "",
       taskType:           "reminder",
       scheduleType:       "interval",
-      scheduleExpression: "",
+      // Real default value — placeholders are not submitted; prefilled text avoids “Expression is required” when Interval is chosen.
+      scheduleExpression: "every 1h",
       timezone:           "",
       enabled:            true,
       instructions:       "",
@@ -400,8 +401,9 @@ export function TaskDrawer({ task, saving, onSave, onClose }: TaskDrawerProps) {
                 className="task-form-select"
                 value={form.scheduleType}
                 onChange={(e) => {
-                  set("scheduleType", e.target.value as ScheduleType);
-                  set("scheduleExpression", "");
+                  const next = e.target.value as ScheduleType;
+                  set("scheduleType", next);
+                  set("scheduleExpression", next === "interval" ? "every 1h" : "");
                 }}
                 disabled={saving}
               >

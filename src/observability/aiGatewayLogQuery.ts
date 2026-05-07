@@ -5,11 +5,16 @@
  * Target: `CLOUDFLARE_ACCOUNT_ID` + `AI_GATEWAY_ID`, or parse account/gateway from `AI_GATEWAY_BASE_URL` /compat URL.
  *
  * @see https://developers.cloudflare.com/api/resources/ai_gateway/subresources/logs/methods/list/
+ *
+ * The public API enforces `per_page` ≤ 50 (error 7001 if exceeded).
  */
 
 import type { Env } from "../lib/env";
 
 export const AI_GATEWAY_LOG_QUERY_VERSION = 1 as const;
+
+/** Cloudflare List Gateway Logs `per_page` maximum (API returns 400 above this). */
+export const AI_GATEWAY_LOGS_API_MAX_PER_PAGE = 50 as const;
 
 export interface AiGatewayLogEntrySummary {
   id: string;
@@ -134,8 +139,175 @@ function mapCfLogRow(raw: Record<string, unknown>): AiGatewayLogEntrySummary {
   };
 }
 
+/** Pair of filters AI Gateway understands for flattened custom metadata `{ key → value }` rows. */
+function metadataKvFilters(metaKey: string, metaValue: string): Array<{
+  key: string;
+  operator: "eq";
+  value: string[];
+}> {
+  const k = metaKey.trim();
+  const v = metaValue.trim();
+  return [
+    { key: "metadata.key", operator: "eq", value: [k] },
+    { key: "metadata.value", operator: "eq", value: [v] },
+  ];
+}
+
+export type AiGatewayAggregatedUsage =
+  | {
+      ok: true;
+      tokensIn: number;
+      tokensOut: number;
+      totalCost: number;
+      entryCount: number;
+      truncated: boolean;
+      pagesFetched: number;
+      entriesSample?: AiGatewayLogEntrySummary[];
+    }
+  | { ok: false; error: string; hint?: string };
+
+/**
+ * Fetches log rows matching a metadata key/value, walking pages until exhausted or maxPages.
+ * Aligns request metadata emitted via `cf-aig-metadata`: keys `run`, `project`, `agent`, etc.
+ */
+export async function fetchAiGatewayLogsByMetadataPair(
+  env: Env,
+  metaKey: string,
+  metaValue: string,
+  options?: { perPage?: number; maxPages?: number }
+): Promise<AiGatewayAggregatedUsage> {
+  const k = typeof metaKey === "string" ? metaKey.trim() : "";
+  const v = typeof metaValue === "string" ? metaValue.trim() : "";
+  if (!k || !v) {
+    return { ok: false, error: "metadata key and value are required.", hint: "Pass non-empty metaKey/metaValue." };
+  }
+
+  const target = resolveLogQueryTarget(env);
+  if ("error" in target) {
+    return { ok: false, error: target.error, hint: target.hint };
+  }
+
+  const token = readEnvString(env, "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_TOKEN");
+  if (!token) {
+    return { ok: false, error: "CLOUDFLARE_API_TOKEN is not configured." };
+  }
+
+  const perPage = Math.min(AI_GATEWAY_LOGS_API_MAX_PER_PAGE, Math.max(1, options?.perPage ?? AI_GATEWAY_LOGS_API_MAX_PER_PAGE));
+  const maxPages = Math.min(200, Math.max(1, options?.maxPages ?? 40));
+
+  const filters = metadataKvFilters(k, v);
+  const collected: AiGatewayLogEntrySummary[] = [];
+  let pagesFetched = 0;
+  let truncated = false;
+
+  for (let page = 1; page <= maxPages; page += 1) {
+    const url = new URL(
+      `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(target.accountId)}/ai-gateway/gateways/${encodeURIComponent(target.gatewayId)}/logs`
+    );
+    url.searchParams.set("per_page", String(perPage));
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("order_by", "created_at");
+    url.searchParams.set("order_by_direction", "desc");
+    url.searchParams.set("filters", JSON.stringify(filters));
+
+    const res = await fetch(url.toString(), {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+
+    const text = await res.text();
+    let body: unknown;
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { parseError: text.slice(0, 200) };
+    }
+
+    if (!res.ok) {
+      const msg =
+        typeof body === "object" && body !== null && "errors" in body
+          ? JSON.stringify((body as { errors?: unknown }).errors)
+          : text.slice(0, 300) || res.statusText;
+      return {
+        ok: false,
+        error: `Cloudflare AI Gateway logs request failed (${res.status}): ${msg}`,
+      };
+    }
+
+    const root = body as {
+      success?: boolean;
+      result?: unknown;
+      errors?: unknown;
+    };
+
+    if (root.success === false) {
+      return {
+        ok: false,
+        error: `Cloudflare API error: ${JSON.stringify(root.errors ?? body)}`,
+      };
+    }
+
+    const rows = Array.isArray(root.result) ? root.result : [];
+    for (const item of rows) {
+      if (item && typeof item === "object") {
+        collected.push(mapCfLogRow(item as Record<string, unknown>));
+      }
+    }
+    pagesFetched += 1;
+
+    if (rows.length < perPage) {
+      truncated = false;
+      break;
+    }
+    if (page === maxPages) {
+      truncated = true;
+    }
+  }
+
+  const { totalCost, tokensIn, tokensOut } = aggregateAiGatewayLogSummaries(collected);
+  const sampleCap = 20;
+  const entriesSample = collected.slice(0, sampleCap);
+
+  return {
+    ok: true,
+    tokensIn,
+    tokensOut,
+    totalCost,
+    entryCount: collected.length,
+    truncated,
+    pagesFetched,
+    entriesSample,
+  };
+}
+
+/** AI Gateway logs for all requests tagged with metadata `project` = control-plane project id (sub-agent orchestration). */
+export async function queryAiGatewayLogsForProject(
+  env: Env,
+  projectId: string,
+  options?: { perPage?: number; maxPages?: number }
+): Promise<AiGatewayAggregatedUsage> {
+  const pid = typeof projectId === "string" ? projectId.trim() : "";
+  if (!pid) return { ok: false, error: "projectId is required." };
+  return fetchAiGatewayLogsByMetadataPair(env, "project", pid, options);
+}
+
+/** AI Gateway logs for requests tagged with metadata `agent` = e.g. CoderAgent | TesterAgent. */
+export async function queryAiGatewayLogsForAgentRole(
+  env: Env,
+  agentName: string,
+  options?: { perPage?: number; maxPages?: number }
+): Promise<AiGatewayAggregatedUsage> {
+  const a = typeof agentName === "string" ? agentName.trim() : "";
+  if (!a) return { ok: false, error: "agent name is required." };
+  return fetchAiGatewayLogsByMetadataPair(env, "agent", a, options);
+}
+
 /**
  * Lists AI Gateway logs where custom metadata key `run` equals the control-plane / loop run id.
+ * Returns a single page (newest rows) suitable for drill-down tables.
  */
 export async function queryAiGatewayLogsForRun(
   env: Env,
@@ -157,16 +329,14 @@ export async function queryAiGatewayLogsForRun(
     return { ok: false, runId: rid, error: "CLOUDFLARE_API_TOKEN is not configured." };
   }
 
-  const perPage = Math.min(100, Math.max(1, options?.limit ?? 50));
-  const filters = [
-    { key: "metadata.key", operator: "eq" as const, value: ["run"] },
-    { key: "metadata.value", operator: "eq" as const, value: [rid] },
-  ];
+  const perPage = Math.min(AI_GATEWAY_LOGS_API_MAX_PER_PAGE, Math.max(1, options?.limit ?? AI_GATEWAY_LOGS_API_MAX_PER_PAGE));
+  const filters = metadataKvFilters("run", rid);
 
   const url = new URL(
     `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(target.accountId)}/ai-gateway/gateways/${encodeURIComponent(target.gatewayId)}/logs`
   );
   url.searchParams.set("per_page", String(perPage));
+  url.searchParams.set("page", "1");
   url.searchParams.set("order_by", "created_at");
   url.searchParams.set("order_by_direction", "desc");
   url.searchParams.set("filters", JSON.stringify(filters));

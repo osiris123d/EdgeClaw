@@ -21,7 +21,10 @@ import { slugifyProjectName } from "./projectSlug";
 import { getSharedWorkspaceGateway } from "../workspace/sharedWorkspaceFactory";
 import {
   AI_GATEWAY_LOG_QUERY_VERSION,
+  AI_GATEWAY_LOGS_API_MAX_PER_PAGE,
   queryAiGatewayLogsForRun,
+  queryAiGatewayLogsForProject,
+  queryAiGatewayLogsForAgentRole,
 } from "../observability/aiGatewayLogQuery";
 import type {
   BlueprintFileKey,
@@ -574,12 +577,67 @@ export async function handleCoordinatorControlPlaneRequest(
       request.method === "GET"
     ) {
       const runId = seg[2]!;
-      const limit = Math.min(100, Math.max(1, Number(url.searchParams.get("limit")) || 50));
+      const limit = Math.min(
+        AI_GATEWAY_LOGS_API_MAX_PER_PAGE,
+        Math.max(1, Number(url.searchParams.get("limit")) || AI_GATEWAY_LOGS_API_MAX_PER_PAGE)
+      );
       const out = await queryAiGatewayLogsForRun(env, runId, { limit });
       if (!out.ok) {
         return json({ ...out, version: AI_GATEWAY_LOG_QUERY_VERSION }, 503);
       }
       return json({ ...out, version: AI_GATEWAY_LOG_QUERY_VERSION });
+    }
+
+    if (
+      seg[0] === "ai-gateway" &&
+      seg[1] === "project-usage" &&
+      seg.length === 2 &&
+      request.method === "GET"
+    ) {
+      const ids = (url.searchParams.get("ids") ?? "")
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (ids.length === 0) {
+        return json(
+          { ok: false, error: 'Query parameter "ids" is required (comma-separated control-plane project IDs).' },
+          400,
+        );
+      }
+      if (ids.length > 48) {
+        return json({ ok: false, error: "Too many project IDs (maximum 48 per request)." }, 400);
+      }
+      const maxPages = Math.min(100, Math.max(1, Number(url.searchParams.get("maxPages")) || 30));
+      const projects: Record<string, unknown> = {};
+      for (const id of ids) {
+        projects[id] = await queryAiGatewayLogsForProject(env, id, { maxPages });
+      }
+      return json({
+        ok: true,
+        version: AI_GATEWAY_LOG_QUERY_VERSION,
+        maxPagesPerProject: maxPages,
+        projects,
+      });
+    }
+
+    if (
+      seg[0] === "ai-gateway" &&
+      seg[1] === "subagent-usage" &&
+      seg.length === 2 &&
+      request.method === "GET"
+    ) {
+      const maxPages = Math.min(100, Math.max(1, Number(url.searchParams.get("maxPages")) || 30));
+      const [coder, tester] = await Promise.all([
+        queryAiGatewayLogsForAgentRole(env, "CoderAgent", { maxPages }),
+        queryAiGatewayLogsForAgentRole(env, "TesterAgent", { maxPages }),
+      ]);
+      return json({
+        ok: true,
+        version: AI_GATEWAY_LOG_QUERY_VERSION,
+        maxPages,
+        CoderAgent: coder,
+        TesterAgent: tester,
+      });
     }
 
     if (seg[0] === "runs" && seg.length === 1 && request.method === "GET") {
