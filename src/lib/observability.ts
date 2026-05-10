@@ -155,6 +155,26 @@ export interface TurnSummaryEvent {
   gatewayModel?: string;
   /** Optional AI Gateway response metadata header value. */
   gatewayProvider?: string;
+  /** Tool compression (Codemode relay) stats for this turn, when recorded. */
+  toolSurface?: ToolSurfaceSummary;
+}
+
+/** Telemetry for minimal vs full tool schema surface sent through AI Gateway. */
+export interface ToolSurfaceSummary {
+  /** Why this turn used or skipped Codemode relay compression. */
+  reason: string;
+  /** Rough schema token estimate for the full merged tool registry. */
+  approxSchemaTokensBefore: number;
+  /** Rough schema token estimate for tools visible to the model after `activeTools` filtering. */
+  approxSchemaTokensAfter: number;
+  /** Count of tools routed only through sandbox `codemode.tools_call`. */
+  wrappedToolCount: number;
+  /** Count of tool names in `activeTools` (including `codemode` when applied). */
+  gatewayVisibleToolCount: number;
+  /** Live Codemode router sanity latch result for LOADER-backed turns. */
+  codemodeSanityStatus?: "skipped" | "ok" | "failed";
+  /** True when widening was applied after sanity/router failure versus user preference. */
+  fallbackToLegacy?: boolean;
 }
 
 /** Discriminated union of all emittable observability events. */

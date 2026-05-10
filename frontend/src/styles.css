@@ -1286,15 +1286,58 @@ button.chat-status-badge.mcp-pill-cta {
   color: #796f63;
 }
 
-.assistant-answer-cursor {
-  position: absolute;
-  right: 10px;
-  bottom: 9px;
-  width: 6px;
-  height: 14px;
-  background: #658a99;
-  border-radius: 2px;
-  animation: status-pulse 0.95s ease-in-out infinite;
+/* Streaming answer — explicit label + dots (replaces cryptic corner “cursor” bar) */
+.assistant-answer-stream-footer {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 10px;
+  padding-top: 9px;
+  border-top: 1px solid #e6dfd4;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #4a5f68;
+}
+
+.assistant-stream-label {
+  line-height: 1.2;
+}
+
+.assistant-stream-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.assistant-stream-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #5d7d8a;
+  animation: assistant-stream-dot 1.15s ease-in-out infinite;
+}
+
+.assistant-stream-dots span:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.assistant-stream-dots span:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes assistant-stream-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.3;
+    transform: scale(0.92);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .browser-artifact-section {
@@ -1805,7 +1848,7 @@ button.chat-status-badge.mcp-pill-cta {
   .turn-status-dot.is-active,
   .activity-step.status-running .activity-marker,
   .turn-loading-line,
-  .assistant-answer-cursor {
+  .assistant-stream-dots span {
     animation: none !important;
   }
 
@@ -4175,6 +4218,132 @@ textarea {
 .settings-card-disabled-note {
   margin: 4px 0 0;
   font-size: 0.8em;
+}
+
+/* ─ MCP / Codemode guidance ─ */
+
+.settings-codemode-guidance-textarea {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  min-height: 6rem;
+  margin-top: 6px;
+  resize: vertical;
+  padding: 8px 10px;
+  font-size: 0.88em;
+  line-height: 1.45;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-soft);
+  background: var(--surface-subtle, var(--surface));
+}
+
+.settings-codemode-guidance-textarea:disabled {
+  opacity: 0.72;
+}
+
+.settings-codemode-guidance-hint {
+  margin: -2px 0 6px;
+  font-size: 0.79em;
+  line-height: 1.4;
+}
+
+.settings-codemode-guidance-notes-label {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.settings-codemode-guidance-notes-title {
+  font-size: 0.86em;
+  font-weight: 600;
+}
+
+.settings-codemode-guidance-disabled-hint {
+  margin: -4px 0 6px;
+  font-size: 0.79em;
+}
+
+.settings-codemode-guidance-examples {
+  font-size: 0.82em;
+  line-height: 1.45;
+}
+
+.settings-codemode-guidance-examples-summary {
+  cursor: pointer;
+}
+
+.settings-codemode-guidance-examples-list {
+  margin: 8px 0 0;
+  padding-left: 1.25rem;
+}
+
+.settings-codemode-guidance-examples-list code {
+  font-size: 0.93em;
+}
+
+.settings-codemode-guidance-effective-preview-tag {
+  display: inline-block;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.78em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(120, 120, 120, 0.12);
+  color: var(--text-muted, #64748b);
+  vertical-align: middle;
+}
+
+.settings-codemode-guidance-effective-preview-summary {
+  cursor: pointer;
+}
+
+.settings-codemode-guidance-effective-preview-hint {
+  margin: 8px 0 6px;
+  font-size: 0.78em;
+  line-height: 1.4;
+}
+
+.settings-codemode-guidance-effective-preview-body {
+  margin: 0;
+  max-height: 10rem;
+  overflow: auto;
+  padding: 8px 10px;
+  font-size: 0.76em;
+  line-height: 1.42;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+
+.settings-codemode-guidance-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.settings-codemode-guidance-label-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-codemode-guidance-card {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 560px) {
+  .settings-codemode-guidance-actions .btn-primary,
+  .settings-codemode-guidance-actions .btn-header-secondary {
+    flex: 1;
+    justify-content: center;
+  }
 }
 
 /* ── MCP Servers ────────────────────────────────────────────────────────────── */

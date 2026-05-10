@@ -110,6 +110,7 @@
 		"ENABLE_BROWSER_TOOLS": "true",
 		"ENABLE_BROWSER_TOOL_DEBUG": "false",
 		"ENABLE_CODE_EXECUTION": "false",
+		"ENABLE_CODEMODE_TOOL_SURFACE": "true",
 		"ENABLE_MCP": "true",
 		"ENABLE_VOICE": "true",
 		// Set to "true" once the SKILLS_BUCKET R2 bucket is created and bound below

@@ -67,6 +67,8 @@ import {
   type ChatRecoveryContext,
   type ChatRecoveryOptions,
   type StreamCallback,
+  type PrepareStepContext,
+  type StepConfig,
 } from "@cloudflare/think";
 /** Mixin: WebSocket voice + STT/TTS on top of Think. */
 // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -218,15 +220,54 @@ import {
   type ChunkContext,
   type ChatResponseResult,
 } from "../hooks";
+import { repairOpenAssistantToolCallsInModelMessages } from "../lib/repairInferenceToolCallHistory";
 import { truncateMessageForSubagentRpcInbound, type DelegationOptions, type SubAgentResult } from "./delegation";
 import { createVoiceService, type VoiceService } from "../voice/VoiceService";
 import { formatSharedDelegationEnvelope } from "../workspace/delegationEnvelope";
 import { getSharedWorkspaceGateway } from "../workspace/sharedWorkspaceFactory";
 import { createSharedWorkspaceToolSet } from "../workspace/sharedWorkspaceTools";
+import { buildCodemodeGuidanceText } from "../lib/codemodeGuidanceSettings";
 import { createNoopGitExecutionAdapter } from "../repo/gitExecutionAdapter";
 import { createGitIntegrationToolSet, isGitIntegrationToolsEnabled } from "../repo/gitIntegrationTools";
+import { planMinimalToolSurface, pickToolsByName } from "../tools/toolSurfacePolicy";
+import { createRelayCodemodeToolSet } from "../tools/codemodeMetaSurface";
+import {
+  formatCodemodeFailureAssistantMarkdown,
+  isAssistantReplySilentAfterCodemodes,
+} from "../tools/codemodeVisibleFallback";
+import { runCodemodeRelayRouterSanity } from "../tools/codemodeRouterSanity";
+import type { CodemodeSanityRunnerResult } from "../tools/codemodeRouterSanity";
+import {
+  formatCodemodeEmergencyRouterMarkdown,
+  type CodemodeSanityTelemetryStatus,
+} from "../tools/codemodeSanityMerge";
+import { isCodemodeRouterPlumbingFailureMessage } from "../tools/codemodeRouterPlumbing";
+import {
+  buildCodemodeApiFailureMarkdownFromTurnState,
+  CODEMODE_API_VALIDATION_BLOCKED_SUBSTITUTE_NOTE,
+  CODEMODE_API_VALIDATION_NEXT_STEP_GENERIC,
+  createEmptyCodemodeApiTurnStopState,
+  dominantNormalizedFamilyFromCounts,
+  recordCodemodeInvocationForApiValidationStop,
+} from "../tools/codemodeApiValidationStop";
+import {
+  parseCodemodeAutoFallbackToLegacyTools,
+  parseCodemodeToolSurfaceUserPreference,
+  resolveCodemodeToolSurfaceCompression,
+  type CodemodeToolSurfaceCompressionDecision,
+} from "../tools/codemodeToolSurfaceResolve";
+import {
+  estimateActiveToolSurfaceTokens,
+  estimateMergedToolSurfaceTokens,
+} from "../tools/toolSurfaceTelemetry";
+import {
+  buildAiGatewayToolsAuditSnapshot,
+  diagnosePrepareStepWidenAgainstFreeze,
+  simulateProviderVisibleToolKeys,
+} from "../tools/gatewayToolSurfaceAudit";
 import type { AgentTurnContext } from "./agentTurnContext";
 export type { AgentTurnContext } from "./agentTurnContext";
+import { deriveMainAgentCodemodeCompressionTurn } from "./mainAgentCodemodeCompressionTurn";
 import { runCodingCollaborationLoop } from "./codingLoop/runCodingCollaborationLoop";
 import type {
   CodingCollaborationLoopInput,
@@ -379,6 +420,20 @@ export interface MainAgentConfig {
    * Defaults to true — tool is silently omitted when the binding is absent.
    */
   enableCodeExecution?: boolean;
+
+  /**
+   * Worker/global allow for Codemode Gateway compression (`ENABLE_CODEMODE_TOOL_SURFACE`).
+   * When `false`, UI cannot enable compression. Defaults from `runtime.featureFlags.enableCodemodeToolSurface`.
+   */
+  enableCodemodeToolSurface?: boolean;
+
+  /**
+   * Overrides live {@link runCodemodeRelayRouterSanity} (DO tests / probes). Production omits — uses Loader round-trip.
+   */
+  codemodeSanityProbe?: (opts: {
+    loader: WorkerLoader | undefined;
+    cloudflareAccountId: string | undefined;
+  }) => Promise<CodemodeSanityRunnerResult>;
 
   /** Custom model router; if not provided, uses standard router */
   modelRouter?: IModelRouter;
@@ -807,6 +862,11 @@ export class MainAgent extends BaseThinkWithVoice {
    */
   protected enableCodeExecution = false;
   /**
+   * Worker `ENABLE_CODEMODE_TOOL_SURFACE` — global kill-switch for Codemode compression (UI cannot override when false).
+   */
+  protected codemodeToolSurfaceEnvAllowed = true;
+  private readonly codemodeSanityProbe?: MainAgentConfig["codemodeSanityProbe"];
+  /**
    * SECURITY: MCP can introduce external tool surfaces over the network.
    * Keep disabled unless explicitly required and configured.
    */
@@ -873,6 +933,51 @@ export class MainAgent extends BaseThinkWithVoice {
   private _turnDynamicRouteModel: string | undefined;
   private _turnGatewayModel: string | undefined;
   private _turnGatewayProvider: string | undefined;
+  /** Tool surface compression telemetry (Codemode relay vs full registry). */
+  private _turnToolSurfaceReason = "";
+  private _turnToolSurfaceSchemaApproxBefore = 0;
+  private _turnToolSurfaceSchemaApproxAfter = 0;
+  private _turnToolSurfaceWrappedCount = 0;
+  private _turnToolSurfaceGatewayVisibleCount = 0;
+  /**
+   * When non-null, every AI SDK `prepareStep` re-applies these names so continuation / tool-result
+   * steps cannot accidentally widen schemas back to the full merged Think registry (`activeTools`
+   * undefined → all tools in the Gateway request — see ai `prepareToolsAndToolChoice`).
+   */
+  private _turnFrozenGatewayActiveTools: string[] | null = null;
+  /**
+   * Per-turn Codemode compression gate (Worker env + persisted settings + LOADER + enableCodeExecution).
+   * Written on the main chat path before `attachCodemodeCompressedToolSurface`.
+   */
+  private _turnCodemodeSurfaceDecision: CodemodeToolSurfaceCompressionDecision | null = null;
+  /** Best-effort capture of codemode tool errors for end-of-turn user-visible fallback. */
+  private _turnCodemodeFailureSummaries: string[] = [];
+  /** True when Codemode compression is narrowed to `codemode` (+ direct tools) this turn. */
+  private _turnCodemodeGatewayNarrow = false;
+
+  /** Bounded user Settings MCP/Codemode guidance (`undefined` when disabled or empty). */
+  private _turnCodemodeGuidanceText: string | undefined;
+
+  /** Latched sanity outcome for Worker session (LOADER). */
+  private _sessionCodemodeSanityLatched: CodemodeSanityRunnerResult | undefined;
+  private _sessionCodemodeSanityInFlight: Promise<CodemodeSanityRunnerResult> | null = null;
+  private _sessionCodemodeSanityLogEmitted = false;
+
+  private _turnCodemodeCompressionWantedPreSanity = false;
+  private _turnCodemodeSanityTelemetryStatus: CodemodeSanityTelemetryStatus = "skipped";
+  /** Router plumbing failures from `codemode` when Gateway is narrowed. */
+  private _turnCodemodeRouterPlumbingStrikes = 0;
+  private _turnCodemodeRouterEmergency = false;
+  private _turnEmergencyWideActiveTools: string[] | null = null;
+  private _turnFullRegistryKeysForEmergency: string[] | null = null;
+  private _turnCodemodeApiTurnStopState = createEmptyCodemodeApiTurnStopState();
+  /** True once API-stop markdown was appended successfully (immediate or onChat retry). */
+  private _turnCodemodeApiStopAssistantInsertedOk = false;
+  /** Markdown body queued when API-stop crosses threshold — retried after the turn if immediate append failed. */
+  private _turnCodemodeApiStopPendingMarkdown: string | null = null;
+  /** `codemode` substitutes blocked after repeated API-validation failures this turn. */
+  private _turnCodemodeApiBlockedSubstituteCount = 0;
+  private _turnCodemodeApiStopTelemetryEmitted = false;
   private _sessionCachedPromptEnabled = true;
   private _sessionCompactionEnabled = true;
   private _sessionCompactionThresholdTokens = 45_000;
@@ -962,6 +1067,9 @@ export class MainAgent extends BaseThinkWithVoice {
     this.enableBrowserToolDebug = runtime.featureFlags.enableBrowserToolDebug;
     this.enableCodeExecution =
       config.enableCodeExecution ?? runtime.featureFlags.enableCodeExecution;
+    this.codemodeToolSurfaceEnvAllowed =
+      config.enableCodemodeToolSurface ?? runtime.featureFlags.enableCodemodeToolSurface;
+    this.codemodeSanityProbe = config.codemodeSanityProbe;
     this.enableMcp = config.enableMcp ?? runtime.featureFlags.enableMcp;
     this.enableVoice = config.enableVoice ?? runtime.featureFlags.enableVoice;
     const browserRunAuth = resolveBrowserRunAuth(env);
@@ -1109,6 +1217,27 @@ export class MainAgent extends BaseThinkWithVoice {
       this._turnDynamicRouteModel = undefined;
       this._turnGatewayModel = undefined;
       this._turnGatewayProvider = undefined;
+      this._turnToolSurfaceReason = "";
+      this._turnToolSurfaceSchemaApproxBefore = 0;
+      this._turnToolSurfaceSchemaApproxAfter = 0;
+      this._turnToolSurfaceWrappedCount = 0;
+      this._turnToolSurfaceGatewayVisibleCount = 0;
+      this._turnFrozenGatewayActiveTools = null;
+      this._turnCodemodeSurfaceDecision = null;
+      this._turnCodemodeFailureSummaries = [];
+      this._turnCodemodeGatewayNarrow = false;
+      this._turnCodemodeGuidanceText = undefined;
+      this._turnCodemodeCompressionWantedPreSanity = false;
+      this._turnCodemodeSanityTelemetryStatus = "skipped";
+      this._turnCodemodeRouterPlumbingStrikes = 0;
+      this._turnCodemodeRouterEmergency = false;
+      this._turnEmergencyWideActiveTools = null;
+      this._turnFullRegistryKeysForEmergency = null;
+      this._turnCodemodeApiTurnStopState = createEmptyCodemodeApiTurnStopState();
+      this._turnCodemodeApiStopAssistantInsertedOk = false;
+      this._turnCodemodeApiStopPendingMarkdown = null;
+      this._turnCodemodeApiBlockedSubstituteCount = 0;
+      this._turnCodemodeApiStopTelemetryEmitted = false;
       this._turnBrowserIntentDetected = false;
       this._turnBrowserSessionLaunchSucceeded = false;
       this._turnFirstBrowserSessionLaunchResult = undefined;
@@ -1148,6 +1277,19 @@ export class MainAgent extends BaseThinkWithVoice {
         dynamicRouteModel: this._turnDynamicRouteModel,
         gatewayModel: this._turnGatewayModel,
         gatewayProvider: this._turnGatewayProvider,
+        ...(this._turnToolSurfaceReason
+          ? {
+              toolSurface: {
+                reason: this._turnToolSurfaceReason,
+                approxSchemaTokensBefore: this._turnToolSurfaceSchemaApproxBefore,
+                approxSchemaTokensAfter: this._turnToolSurfaceSchemaApproxAfter,
+                wrappedToolCount: this._turnToolSurfaceWrappedCount,
+                gatewayVisibleToolCount: this._turnToolSurfaceGatewayVisibleCount,
+                codemodeSanityStatus: this._turnCodemodeSanityTelemetryStatus,
+                fallbackToLegacy: this.computeTurnGatewayFallbackToLegacyTelemetry(),
+              },
+            }
+          : {}),
       });
     });
   }
@@ -1645,6 +1787,46 @@ export class MainAgent extends BaseThinkWithVoice {
   }
 
   /**
+   * Domain tool bag passed into sandboxed code execution (`execute` / Codemode relay).
+   */
+  private getDomainBaseTools(): ToolSet {
+    return createAgentTools({
+      workspace: this.getWorkspace() as unknown as WorkspaceLike | undefined,
+      approvalEvaluator: defaultApprovalEvaluator,
+      taskAdapter: this as unknown as TaskToolAdapter,
+    });
+  }
+
+  /** Legacy `execute` tool when Codemode compression omits it from {@link getTools}. */
+  private createLegacyExecuteToolEntry(): ToolSet | undefined {
+    if (!this.enableCodeExecution || !this.env.LOADER) return undefined;
+    const entry = createCodeExecutionTool({
+      loader: this.env.LOADER,
+      workspace: this.getWorkspace(),
+      tools: this.getDomainBaseTools(),
+    });
+    return entry ?? undefined;
+  }
+
+  /**
+   * When Codemode compression is disabled via UI while the Worker still allows relay infra,
+   * `getTools()` omits legacy `execute` — merge it back for this turn.
+   */
+  private maybeInjectLegacyExecuteWhenCompressionDisabled(baseConfig: TurnConfig): void {
+    if (this._turnCodemodeSurfaceDecision?.effective) return;
+    if (
+      !this.codemodeToolSurfaceEnvAllowed ||
+      !this.env.LOADER ||
+      !this.enableCodeExecution
+    ) {
+      return;
+    }
+    const execEntry = this.createLegacyExecuteToolEntry();
+    if (!execEntry) return;
+    baseConfig.tools = { ...(baseConfig.tools ?? {}), ...execEntry };
+  }
+
+  /**
    * Get custom server-side tools available to this agent.
    *
    * Think auto-merges built-in workspace tools separately, so this method only
@@ -1677,16 +1859,7 @@ export class MainAgent extends BaseThinkWithVoice {
       );
     }
 
-    const baseTools = createAgentTools({
-      // Cast: Workspace.readFile returns string|null but WorkspaceLike expects string;
-      // the stat() guard in each tool call site already ensures non-null reads.
-      workspace: this.getWorkspace() as unknown as WorkspaceLike | undefined,
-      approvalEvaluator: defaultApprovalEvaluator,
-      // Cast: MainAgent implements TaskToolAdapter structurally via tasksCreate /
-      // tasksGetAll / tasksDelete. The cast is safe — TS structural typing verifies
-      // this at compile time if the method signatures match.
-      taskAdapter: this as unknown as TaskToolAdapter,
-    });
+    const baseTools = this.getDomainBaseTools();
 
     console.log(
       `[EdgeClaw][tools-audit] baseTools contains: ${Object.keys(baseTools).join(", ") || "(none)"}`
@@ -1714,12 +1887,13 @@ export class MainAgent extends BaseThinkWithVoice {
     // Sandboxed code execution tool — omitted when LOADER binding is absent
     // or the feature is disabled. When workspace is present, the sandbox
     // also gets the full state.* filesystem API (readFile, planEdits, …).
+    const relayCodemodeSurfaceEligible =
+      this.codemodeToolSurfaceEnvAllowed && hasLoaderBinding && this.enableCodeExecution;
+
     const codeExecutionEntry = this.enableCodeExecution
-      ? createCodeExecutionTool({
-          loader: this.env.LOADER,
-          workspace: this.getWorkspace(),
-          tools: baseTools,
-        })
+      ? relayCodemodeSurfaceEligible
+        ? undefined
+        : this.createLegacyExecuteToolEntry()
       : undefined;
 
     // Persistent browser session tool — only available when browser bindings exist
@@ -2438,6 +2612,8 @@ export class MainAgent extends BaseThinkWithVoice {
   async beforeTurn(ctx: TurnContext): Promise<TurnConfig | void> {
     this._turnLatestUserMessage = "";
     this._turnAgentShouldSpeakTts = false;
+    let userCodemodeToolSurfaceEnabled = true;
+    let codemodeAutoFallbackToLegacyTools = true;
     const availableToolNames = Object.keys(ctx.tools ?? {});
     const browserSearchPresent = availableToolNames.includes("browser_search");
     const browserExecutePresent = availableToolNames.includes("browser_execute");
@@ -2454,6 +2630,16 @@ export class MainAgent extends BaseThinkWithVoice {
     const bodySettings = ctx.body?.settings;
     if (bodySettings && typeof bodySettings === "object") {
       const s = bodySettings as Record<string, unknown>;
+      userCodemodeToolSurfaceEnabled = parseCodemodeToolSurfaceUserPreference(
+        s.codemodeToolSurfaceEnabled
+      );
+      codemodeAutoFallbackToLegacyTools = parseCodemodeAutoFallbackToLegacyTools(
+        s.codemodeAutoFallbackToLegacyTools
+      );
+      this._turnCodemodeGuidanceText = buildCodemodeGuidanceText({
+        codemodeGuidanceEnabled: s.codemodeGuidanceEnabled,
+        codemodeGuidanceNotes: s.codemodeGuidanceNotes,
+      });
       if (s.enableBrowserTools === false) {
         chatBrowserToolsAllowed = false;
       }
@@ -2583,16 +2769,25 @@ export class MainAgent extends BaseThinkWithVoice {
     const hygiene = this.applyLightweightHistoryHygiene(ctx.messages);
     const effectiveMessages = hygiene.changed ? hygiene.messages : ctx.messages;
 
+    const repairedToolHistory = repairOpenAssistantToolCallsInModelMessages(effectiveMessages);
+    if (repairedToolHistory.repairedIds.length > 0) {
+      console.warn(
+        `[EdgeClaw][tool-history-repair] Injected synthetic tool-results for orphaned tool_calls: ` +
+          `${repairedToolHistory.repairedIds.join(", ")}`
+      );
+    }
+    const messagesForInference = repairedToolHistory.messages as unknown[];
+
     this._turnDroppedEmptyAssistant = hygiene.droppedEmptyAssistant;
     this._turnDroppedDuplicateGreeting = hygiene.droppedDuplicateGreeting;
     this._turnDroppedAssistantStatus = hygiene.droppedAssistantStatus;
-    this._turnInferenceMessageCount = effectiveMessages.length;
-    const retainedQuality = this.analyzeRetainedHistoryQuality(effectiveMessages);
+    this._turnInferenceMessageCount = messagesForInference.length;
+    const retainedQuality = this.analyzeRetainedHistoryQuality(messagesForInference);
     this._turnRetainedToolMessages = retainedQuality.toolMessages;
     this._turnRetainedSubstantiveUserMessages = retainedQuality.substantiveUserMessages;
     this._turnSystemOverridden =
       typeof sanitizedHookConfig.system === "string" && sanitizedHookConfig.system !== ctx.system;
-    this._turnPromptCharsEstimate = this.estimatePromptChars(ctx.system, effectiveMessages);
+    this._turnPromptCharsEstimate = this.estimatePromptChars(ctx.system, messagesForInference);
     this._turnPromptTokensEstimate = Math.max(1, Math.ceil(this._turnPromptCharsEstimate / 4));
     const compactionDistanceTokens =
       this._sessionCompactionThresholdTokens - this._turnPromptTokensEstimate;
@@ -2626,9 +2821,10 @@ export class MainAgent extends BaseThinkWithVoice {
       ...sanitizedHookConfig,
     };
 
-    if (hygiene.changed) {
-      // Keep Think Session as source-of-truth; only trim clear low-value noise pre-inference.
-      baseConfig.messages = effectiveMessages as TurnConfig["messages"];
+    if (hygiene.changed || repairedToolHistory.repairedIds.length > 0) {
+      // Hygiene trims noise; synthetic tool-results unblock AI SDK LM conversion when orphans exist.
+      // Session rows are unchanged until Think persists assistant output for this turn.
+      baseConfig.messages = messagesForInference as TurnConfig["messages"];
     }
 
     if (guardDecision.shouldShortCircuit && !browserToolsPresent) {
@@ -2642,13 +2838,13 @@ export class MainAgent extends BaseThinkWithVoice {
       console.info(
         `[browser-grounding] browserIntentDetected=${browserIntentDetected} routeClass=n/a toolChoice=none toolCallCount=0 screenshotPresent=no renderedAs=none`
       );
-      return {
+      return this.finalizeBeforeTurnGatewayAuditAndFreeze((ctx.tools ?? {}) as ToolSet, {
         ...baseConfig,
         model: createDeterministicTextModel(guardText),
         activeTools: [],
         toolChoice: "none",
         maxSteps: 1,
-      };
+      });
     }
 
     // Browser grounding gate: when browser intent is detected and tools are available,
@@ -2680,7 +2876,7 @@ export class MainAgent extends BaseThinkWithVoice {
           `[browser-grounding] explicitBrowserSessionStructuredCall=yes maxSteps=${maxSteps} ` +
             `activeTools=${activeBrowserTools.join(",") || "(none)"}`
         );
-        return {
+        return this.finalizeBeforeTurnGatewayAuditAndFreeze((ctx.tools ?? {}) as ToolSet, {
           ...baseConfig,
           system: baseSystem
             ? `${baseSystem}\n\n${structuredSessionSupplement}`
@@ -2688,7 +2884,7 @@ export class MainAgent extends BaseThinkWithVoice {
           activeTools: activeBrowserTools,
           toolChoice: "required",
           maxSteps,
-        };
+        });
       }
 
       const routeClass = "tools";
@@ -2701,12 +2897,12 @@ export class MainAgent extends BaseThinkWithVoice {
         `[browser-grounding] explicitBrowserSessionStructuredCall=no maxSteps=${maxSteps} ` +
           `activeTools=${browserToolNames.join(",") || "(none)"}`
       );
-      return {
+      return this.finalizeBeforeTurnGatewayAuditAndFreeze((ctx.tools ?? {}) as ToolSet, {
         ...baseConfig,
         activeTools: browserToolNames,
         toolChoice: "required",
         maxSteps,
-      };
+      });
     }
 
     console.info(
@@ -2761,6 +2957,49 @@ export class MainAgent extends BaseThinkWithVoice {
       console.error(`[EdgeClaw][workflow-notification] Failed to drain pending notifications: ${e}`);
     }
 
+    const thinkMergedTools = (ctx.tools ?? {}) as ToolSet;
+
+    const compressionPreSanity = resolveCodemodeToolSurfaceCompression({
+      envGloballyAllows: this.codemodeToolSurfaceEnvAllowed,
+      userCodemodeToolSurfaceEnabled,
+      hasLoaderBinding: Boolean(this.env.LOADER),
+      codeExecutionEnabled: this.enableCodeExecution,
+    });
+    this._turnCodemodeCompressionWantedPreSanity = compressionPreSanity.effective;
+
+    let sanityOutcome: CodemodeSanityRunnerResult | undefined;
+    if (compressionPreSanity.effective) {
+      sanityOutcome = await this.latchCodemodeRouterSanity();
+    }
+
+    const turnView = deriveMainAgentCodemodeCompressionTurn({
+      mergedTools: thinkMergedTools,
+      compressionPreSanity,
+      sanityOutcome,
+      codemodeAutoFallbackToLegacyTools,
+      hasLoaderBinding: Boolean(this.env.LOADER),
+      codeExecutionEnabled: this.enableCodeExecution,
+    });
+
+    this._turnCodemodeSanityTelemetryStatus = turnView.sanityTelemetryStatus;
+    this._turnCodemodeSurfaceDecision = turnView.finalCompression;
+
+    if (compressionPreSanity.effective && sanityOutcome) {
+      this.emitCodemodeSanityLogOnce(sanityOutcome);
+    }
+    if (turnView.visibleSanityBanner) {
+      await this.injectImmediateCodemodeAssistantMarkdown(turnView.visibleSanityBanner);
+    }
+
+    if (this.obs.isEnabled("debug")) {
+      console.info(
+        `[EdgeClaw][codemode-surface-debug] ${JSON.stringify(this._turnCodemodeSurfaceDecision)}`
+      );
+    }
+
+    this.attachCodemodeCompressedToolSurface(thinkMergedTools, baseConfig);
+    this.maybeInjectLegacyExecuteWhenCompressionDisabled(baseConfig);
+
     if (this.enableBrowserTools && !chatBrowserToolsAllowed) {
       const prior = baseConfig.activeTools;
       const source =
@@ -2768,7 +3007,236 @@ export class MainAgent extends BaseThinkWithVoice {
       baseConfig.activeTools = source.filter((n) => !MAIN_CHAT_BROWSER_TOOL_NAMES.has(n));
     }
 
-    return Object.keys(baseConfig).length > 0 ? baseConfig : undefined;
+    this.finalizeTurnToolSurfaceTelemetry(thinkMergedTools, baseConfig);
+
+    const augmentedForEmergency: ToolSet = {
+      ...thinkMergedTools,
+      ...(baseConfig.tools ?? {}),
+    };
+    this._turnFullRegistryKeysForEmergency = Object.keys(augmentedForEmergency).sort();
+
+    if (Object.keys(baseConfig).length === 0) return undefined;
+    return this.finalizeBeforeTurnGatewayAuditAndFreeze(thinkMergedTools, baseConfig);
+  }
+
+  /**
+   * Re-applies the frozen `TurnConfig.activeTools` on every AI SDK step so continuation / tool-result
+   * passes cannot widen the Gateway-visible tool schemas.
+   *
+   * Think calls `streamText({ tools: finalTools, activeTools: config.activeTools })`; the AI SDK then
+   * allows each `prepareStep` to replace `activeTools`. When unspecified, earlier steps inherit the turn
+   * default — keeping an explicit freeze here avoids accidental regressions across multi-step loops.
+   */
+  override async beforeStep(ctx: PrepareStepContext): Promise<StepConfig | void> {
+    const parent = await super.beforeStep(ctx);
+    const emergencyWide =
+      this._turnCodemodeRouterEmergency &&
+      Array.isArray(this._turnEmergencyWideActiveTools) &&
+      this._turnEmergencyWideActiveTools.length > 0;
+    const freeze = emergencyWide
+      ? this._turnEmergencyWideActiveTools
+      : this._turnFrozenGatewayActiveTools;
+    if (freeze === null) {
+      return parent ?? undefined;
+    }
+    const parentObj = parent && typeof parent === "object" ? parent : undefined;
+    const widenDiag = diagnosePrepareStepWidenAgainstFreeze(freeze, parentObj);
+    if (widenDiag) {
+      console.warn(widenDiag);
+    }
+    return {
+      ...(parentObj ?? {}),
+      activeTools: [...freeze],
+    };
+  }
+
+  /** Persist + log authoritative Gateway-visible tools for this inference loop. */
+  private finalizeBeforeTurnGatewayAuditAndFreeze(
+    mergedTools: ToolSet,
+    cfg: TurnConfig
+  ): TurnConfig {
+    this.persistFrozenGatewayActiveTools(cfg.activeTools);
+    this.logAiGatewayToolsAtModelBoundary(mergedTools, cfg);
+    return cfg;
+  }
+
+  private persistFrozenGatewayActiveTools(activeTools: string[] | undefined): void {
+    if (activeTools === undefined) {
+      this._turnFrozenGatewayActiveTools = null;
+    } else {
+      this._turnFrozenGatewayActiveTools = [...activeTools];
+    }
+  }
+
+  /** Closest approximation to schemas included in outbound provider requests (`prepareToolsAndToolChoice`). */
+  private logAiGatewayToolsAtModelBoundary(mergedTools: ToolSet, cfg: TurnConfig): void {
+    const augmentedTools: ToolSet = {
+      ...mergedTools,
+      ...(cfg.tools ?? {}),
+    };
+    const augmentedKeys = Object.keys(augmentedTools);
+    const configured = cfg.activeTools;
+    const visibleKeys =
+      configured === undefined || configured === null
+        ? augmentedKeys
+        : simulateProviderVisibleToolKeys(augmentedKeys, configured);
+    const sortedVisible = [...visibleKeys].sort();
+    const approx = estimateActiveToolSurfaceTokens(augmentedTools, visibleKeys);
+
+    const decision = this._turnCodemodeSurfaceDecision;
+    const fallbackToLegacy = this.computeTurnGatewayFallbackToLegacyTelemetry();
+    console.info(
+      `[EdgeClaw][gateway-tools] ${JSON.stringify({
+        codemodeEffective: decision?.effective ?? false,
+        codemodeReason: decision?.reason ?? "not_resolved",
+        codemodeSanityStatus: this._turnCodemodeSanityTelemetryStatus,
+        fallbackToLegacy,
+        gatewayUnrestrictedSchemas: configured === undefined || configured === null,
+        gatewayVisibleToolCount: sortedVisible.length,
+        approxSchemaTokens: approx,
+        toolSurfacePlanReason: this._turnToolSurfaceReason || null,
+        wrappedToolCount: this._turnToolSurfaceWrappedCount,
+        perStepFrozenActiveTools: this._turnFrozenGatewayActiveTools !== null,
+      })}`
+    );
+
+    if (this.obs.isEnabled("debug")) {
+      if (configured === undefined || configured === null) {
+        console.info(
+          `[EdgeClaw][gateway-tools-debug] ${JSON.stringify({
+            gatewayVisibleToolNames: sortedVisible,
+            mode: "unrestricted_all_merged_definitions_visible",
+            mergedRegistryKeysSorted: [...Object.keys(mergedTools)].sort(),
+            augmentedToolKeysSorted: [...augmentedKeys].sort(),
+            turnOverlayKeysSorted: [...Object.keys(cfg.tools ?? {})].sort(),
+          })}`
+        );
+      } else {
+        const snapshot = buildAiGatewayToolsAuditSnapshot(augmentedTools, configured);
+        console.info(
+          `[EdgeClaw][gateway-tools-debug] ${JSON.stringify({
+            gatewayVisibleToolNames: sortedVisible,
+            ...snapshot,
+          })}`
+        );
+      }
+    }
+  }
+
+  /**
+   * When Codemode surface is compressed, guidance is appended to the `codemode` schema.
+   * When wide tools are exposed, merge the same text into system once (additive).
+   */
+  private maybeAppendCodemodeGuidanceToSystem(
+    baseConfig: TurnConfig,
+    compressedCodemodeApplied: boolean
+  ): void {
+    const g = this._turnCodemodeGuidanceText;
+    if (!g || compressedCodemodeApplied) return;
+
+    const block =
+      "\n\n---\n\n**MCP/Codemode guidance** (workspace Settings):\n\n" + g.trimEnd();
+    const rawSys = baseConfig.system;
+    const prior = typeof rawSys === "string" ? rawSys.trimEnd() : "";
+    baseConfig.system = prior ? `${prior}${block}` : block.trimStart();
+  }
+
+  /**
+   * Narrows Gateway-visible tools via `activeTools` while keeping full definitions
+   * in Think's merged registry for execution. MCP / OpenAPI-ish / read helpers route
+   * through sandbox `codemode.tools_*` when policy wraps them.
+   */
+  private attachCodemodeCompressedToolSurface(mergedTools: ToolSet, baseConfig: TurnConfig): void {
+    this._turnCodemodeGatewayNarrow = false;
+    const mergedKeys = Object.keys(mergedTools);
+    this._turnToolSurfaceSchemaApproxBefore = estimateMergedToolSurfaceTokens(mergedTools);
+
+    const codemodeSurfaceEnabled = this._turnCodemodeSurfaceDecision?.effective ?? false;
+
+    const plan = planMinimalToolSurface({
+      mergedTools,
+      codemodeSurfaceEnabled,
+      hasLoaderBinding: Boolean(this.env.LOADER),
+      codeExecutionEnabled: this.enableCodeExecution,
+    });
+
+    this._turnToolSurfaceReason = plan.reason;
+
+    let compressionApplied = false;
+    if (plan.reason === "codemode-surface-applied-default") {
+      compressionApplied = true;
+      this._turnCodemodeGatewayNarrow = true;
+      const relay = pickToolsByName(mergedTools, plan.wrappedNames);
+      const codemodePartial = createRelayCodemodeToolSet({
+        relay,
+        loader: this.env.LOADER as WorkerLoader,
+        workspace: this.getWorkspace(),
+        cloudflareAccountId: this.resolveCloudflareAccountIdForRouter(),
+        codemodeDescriptionAppendix: this._turnCodemodeGuidanceText,
+      });
+      baseConfig.tools = {
+        ...(baseConfig.tools ?? {}),
+        ...codemodePartial,
+      };
+      const activeNames = ["codemode", ...plan.directNames];
+      baseConfig.activeTools = [...new Set(activeNames)];
+
+      const mergedVisible = {
+        ...mergedTools,
+        ...codemodePartial,
+      };
+
+      this._turnToolSurfaceWrappedCount = plan.wrappedNames.length;
+      this._turnToolSurfaceGatewayVisibleCount = baseConfig.activeTools.length;
+      this._turnToolSurfaceSchemaApproxAfter = estimateActiveToolSurfaceTokens(
+        mergedVisible,
+        baseConfig.activeTools
+      );
+    } else {
+      this._turnToolSurfaceWrappedCount = 0;
+      const unrestrictedNames =
+        Array.isArray(baseConfig.activeTools) && baseConfig.activeTools.length > 0
+          ? baseConfig.activeTools
+          : mergedKeys;
+      this._turnToolSurfaceGatewayVisibleCount = unrestrictedNames.length;
+      this._turnToolSurfaceSchemaApproxAfter = estimateActiveToolSurfaceTokens(
+        mergedTools,
+        unrestrictedNames
+      );
+    }
+
+    this.maybeAppendCodemodeGuidanceToSystem(baseConfig, compressionApplied);
+
+    if (this.obs.isEnabled("debug")) {
+      console.info(
+        `[EdgeClaw][tool-surface-debug] ${JSON.stringify({
+          codemodeSurfaceDecision: this._turnCodemodeSurfaceDecision,
+          reason: this._turnToolSurfaceReason,
+          wrappedToolCount: this._turnToolSurfaceWrappedCount,
+          gatewayVisibleToolCount: this._turnToolSurfaceGatewayVisibleCount,
+          approxSchemaTokensBefore: this._turnToolSurfaceSchemaApproxBefore,
+          approxSchemaTokensAfter: this._turnToolSurfaceSchemaApproxAfter,
+        })}`
+      );
+    }
+  }
+
+  /** Refresh schema-footprint telemetry after downstream `beforeTurn` mutations (browser UI gate). */
+  private finalizeTurnToolSurfaceTelemetry(mergedTools: ToolSet, baseConfig: TurnConfig): void {
+    if (!this._turnToolSurfaceReason) return;
+
+    const augmentedTools: ToolSet = {
+      ...mergedTools,
+      ...(baseConfig.tools ?? {}),
+    };
+    const active = Array.isArray(baseConfig.activeTools)
+      ? baseConfig.activeTools
+      : Object.keys(augmentedTools);
+    this._turnToolSurfaceGatewayVisibleCount = active.length;
+    this._turnToolSurfaceSchemaApproxAfter = estimateActiveToolSurfaceTokens(
+      augmentedTools,
+      active
+    );
   }
 
   private getRawEnvString(key: "ENABLE_BROWSER_TOOLS"): string | undefined {
@@ -2842,6 +3310,27 @@ export class MainAgent extends BaseThinkWithVoice {
       };
     }
 
+    if (ctx.toolName === "codemode" && this._turnCodemodeRouterEmergency) {
+      console.warn("[EdgeClaw][codemode-emergency] Blocked redundant codemode call after router failure.");
+      return {
+        action: "substitute",
+        output: formatCodemodeEmergencyRouterMarkdown(),
+      };
+    }
+
+    if (
+      ctx.toolName === "codemode" &&
+      this._turnCodemodeApiTurnStopState.stoppedFurtherCodemode &&
+      !this._turnCodemodeRouterEmergency
+    ) {
+      this._turnCodemodeApiBlockedSubstituteCount += 1;
+      console.warn("[EdgeClaw][codemode-api-stop] Blocked further codemode after repeated API validation failures.");
+      return {
+        action: "substitute",
+        output: CODEMODE_API_VALIDATION_BLOCKED_SUBSTITUTE_NOTE,
+      };
+    }
+
     if (this.hooks.toolPolicy.size > 0) {
       const decision = await this.hooks.toolPolicy.evaluate({
         ...ctx,
@@ -2858,6 +3347,8 @@ export class MainAgent extends BaseThinkWithVoice {
    * `ToolCallResultContext` (`input`, `success`, `output`/`error`, `durationMs`).
    */
   async afterToolCall(ctx: ToolCallResultContext): Promise<void> {
+    this.maybeRecordCodemodeToolFailure(ctx);
+    await this.maybeRecordCodemodeApiValidationStop(ctx);
     if (this.enableBrowserToolDebug && this.isBrowserTool(ctx.toolName)) {
       this.logBrowserToolDebug("after", ctx.toolName, {
         input: ctx.input,
@@ -2885,6 +3376,245 @@ export class MainAgent extends BaseThinkWithVoice {
       requestId: this.requestId,
       ok: ctx.success,
     });
+  }
+
+  private computeTurnGatewayFallbackToLegacyTelemetry(): boolean {
+    if (this._turnCodemodeRouterEmergency) return true;
+    return (
+      this._turnCodemodeCompressionWantedPreSanity &&
+      !(this._turnCodemodeSurfaceDecision?.effective ?? false)
+    );
+  }
+
+  private async latchCodemodeRouterSanity(): Promise<CodemodeSanityRunnerResult> {
+    if (!this.env.LOADER && !this.codemodeSanityProbe) {
+      const missing: CodemodeSanityRunnerResult = {
+        ok: false,
+        reason: "sanity_missing_loader_binding",
+      };
+      if (this._sessionCodemodeSanityLatched === undefined) {
+        this._sessionCodemodeSanityLatched = missing;
+      }
+      return this._sessionCodemodeSanityLatched!;
+    }
+    if (this._sessionCodemodeSanityLatched !== undefined) {
+      return this._sessionCodemodeSanityLatched;
+    }
+    if (!this._sessionCodemodeSanityInFlight) {
+      const accountId = this.resolveCloudflareAccountIdForRouter();
+      const runner = (): Promise<CodemodeSanityRunnerResult> =>
+        this.codemodeSanityProbe
+          ? this.codemodeSanityProbe({
+              loader: this.env.LOADER,
+              cloudflareAccountId: accountId,
+            })
+          : runCodemodeRelayRouterSanity({
+              loader: this.env.LOADER as WorkerLoader,
+              cloudflareAccountId: accountId,
+            });
+      this._sessionCodemodeSanityInFlight = runner()
+        .then((r) => {
+          this._sessionCodemodeSanityLatched = r;
+          return r;
+        })
+        .catch((e) => {
+          const failure: CodemodeSanityRunnerResult = {
+            ok: false,
+            reason: `sanity_rejected:${e instanceof Error ? e.message.slice(0, 220) : String(e).slice(0, 220)}`,
+          };
+          this._sessionCodemodeSanityLatched = failure;
+          return failure;
+        })
+        .finally(() => {
+          this._sessionCodemodeSanityInFlight = null;
+        });
+    }
+    return this._sessionCodemodeSanityInFlight as Promise<CodemodeSanityRunnerResult>;
+  }
+
+  private emitCodemodeSanityLogOnce(sanity: CodemodeSanityRunnerResult): void {
+    if (this._sessionCodemodeSanityLogEmitted) return;
+    this._sessionCodemodeSanityLogEmitted = true;
+    if (sanity.ok) {
+      console.info(`[EdgeClaw][codemode-sanity] status=ok registeredMethods=${sanity.registeredMethods}`);
+    } else {
+      const scrubbed = sanity.reason.replace(/\s+/g, " ").trim();
+      console.info(`[EdgeClaw][codemode-sanity] status=failed reason=${scrubbed.slice(0, 400)}`);
+    }
+  }
+
+  private async injectImmediateCodemodeAssistantMarkdown(body: string): Promise<boolean> {
+    try {
+      const think = this as unknown as {
+        session: { appendMessage: (m: UIMessage) => Promise<void> };
+        _broadcastMessages?: () => void;
+      };
+      const msg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        parts: [{ type: "text", text: body }],
+      };
+      await think.session.appendMessage(msg);
+      think._broadcastMessages?.();
+      return true;
+    } catch (e) {
+      console.error("[EdgeClaw][codemode-notice] Failed to append assistant notice:", e);
+      return false;
+    }
+  }
+
+  private activateCodemodeRouterEmergency(kind: string, errSnippet: string): void {
+    if (this._turnCodemodeRouterEmergency || !this._turnCodemodeGatewayNarrow) return;
+    this._turnCodemodeRouterEmergency = true;
+    const keys =
+      Array.isArray(this._turnFullRegistryKeysForEmergency) &&
+      this._turnFullRegistryKeysForEmergency.length > 0
+        ? [...this._turnFullRegistryKeysForEmergency]
+        : [];
+    if (keys.length > 0) {
+      this._turnEmergencyWideActiveTools = keys;
+    } else {
+      console.warn(
+        "[EdgeClaw][codemode-emergency] Cannot widen Gateway tools — registry keys were not captured for this turn."
+      );
+    }
+    console.info(
+      `[EdgeClaw][gateway-tools] ${JSON.stringify({
+        event: "codemode-router-emergency",
+        kind,
+        fallbackToLegacy: true,
+        plumbingStrikes: this._turnCodemodeRouterPlumbingStrikes,
+        gatewayWideToolCount: keys.length,
+        lastErrorPreview: errSnippet.slice(0, 220),
+      })}`
+    );
+    void this.injectImmediateCodemodeAssistantMarkdown(formatCodemodeEmergencyRouterMarkdown());
+  }
+
+  private resolveCloudflareAccountIdForRouter(): string | undefined {
+    const id = this.env.Variables?.CLOUDFLARE_ACCOUNT_ID ?? this.env.CLOUDFLARE_ACCOUNT_ID;
+    return typeof id === "string" && id.trim() ? id.trim() : undefined;
+  }
+
+  private maybeRecordCodemodeToolFailure(ctx: ToolCallResultContext): void {
+    if (ctx.toolName !== "codemode" || ctx.success) return;
+    const errUnknown = ctx.error;
+    const err =
+      typeof errUnknown === "string"
+        ? errUnknown
+        : errUnknown instanceof Error
+          ? errUnknown.message
+          : (() => {
+              try {
+                return JSON.stringify(errUnknown);
+              } catch {
+                return String(errUnknown);
+              }
+            })();
+    this._turnCodemodeFailureSummaries.push(err.slice(0, 800));
+    if (!this._turnCodemodeGatewayNarrow || this._turnCodemodeRouterEmergency) return;
+    if (!isCodemodeRouterPlumbingFailureMessage(err)) return;
+    this._turnCodemodeRouterPlumbingStrikes += 1;
+    if (this._turnCodemodeRouterPlumbingStrikes >= 2) {
+      this.activateCodemodeRouterEmergency("plumbing", err);
+    }
+  }
+
+  private async maybeRecordCodemodeApiValidationStop(ctx: ToolCallResultContext): Promise<void> {
+    if (ctx.toolName !== "codemode") return;
+    const { justCrossedThreshold } = recordCodemodeInvocationForApiValidationStop({
+      state: this._turnCodemodeApiTurnStopState,
+      success: ctx.success,
+      output: ctx.output,
+      error: ctx.error,
+      routerPlumbingEmergency: this._turnCodemodeRouterEmergency,
+    });
+    if (!justCrossedThreshold) return;
+
+    const body = buildCodemodeApiFailureMarkdownFromTurnState(
+      this._turnCodemodeApiTurnStopState,
+      CODEMODE_API_VALIDATION_NEXT_STEP_GENERIC
+    );
+    if (!body) return;
+
+    this._turnCodemodeApiStopPendingMarkdown = body;
+    const ok = await this.injectImmediateCodemodeAssistantMarkdown(body);
+    if (ok) this._turnCodemodeApiStopAssistantInsertedOk = true;
+  }
+
+  private maybeEmitCodemodeApiStopEndOfTurnTelemetry(): void {
+    const st = this._turnCodemodeApiTurnStopState;
+    if (!st.stoppedFurtherCodemode || this._turnCodemodeApiStopTelemetryEmitted) return;
+    this._turnCodemodeApiStopTelemetryEmitted = true;
+    const normalizedError = dominantNormalizedFamilyFromCounts(st.normalizedFamilyCounts);
+    const count = normalizedError ? (st.normalizedFamilyCounts[normalizedError] ?? 0) : 0;
+    const mixedSuccess = st.validationEvents.length > 0 && st.successfulFindingsDeduped.length > 0;
+    const successfulFindingTypes = [...st.successfulFindingTypes].sort();
+    console.info(
+      `[EdgeClaw][codemode-api-stop] ${JSON.stringify({
+        normalizedError: normalizedError.slice(0, 160),
+        count,
+        mixedSuccess,
+        stoppedFurtherCodemode: true,
+        successfulFindingTypes,
+        blockedFurtherCodemodeCalls: this._turnCodemodeApiBlockedSubstituteCount,
+      })}`
+    );
+  }
+
+  private async maybeInjectCodemodeFailureFallbackAssistantMessage(
+    result: ChatResponseResult
+  ): Promise<void> {
+    if (this._turnCodemodeFailureSummaries.length === 0) return;
+    const text = voiceExtractTextFromUiMessage(result.message).trim();
+    const silent = isAssistantReplySilentAfterCodemodes(text);
+    if (!silent) return;
+    const body = formatCodemodeFailureAssistantMarkdown(this._turnCodemodeFailureSummaries);
+    try {
+      const think = this as unknown as {
+        session: { appendMessage: (m: UIMessage) => Promise<void> };
+        _broadcastMessages?: () => void;
+      };
+      const msg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        parts: [{ type: "text", text: body }],
+      };
+      await think.session.appendMessage(msg);
+      think._broadcastMessages?.();
+    } catch (e) {
+      console.error("[EdgeClaw][codemode-fallback] Failed to append assistant notice:", e);
+    }
+  }
+
+  private async maybeInjectCodemodeApiStopAssistantMessage(_result: ChatResponseResult): Promise<void> {
+    if (!this._turnCodemodeApiTurnStopState.stoppedFurtherCodemode) return;
+    if (this._turnCodemodeApiStopAssistantInsertedOk) return;
+
+    const body =
+      this._turnCodemodeApiStopPendingMarkdown ??
+      buildCodemodeApiFailureMarkdownFromTurnState(
+        this._turnCodemodeApiTurnStopState,
+        CODEMODE_API_VALIDATION_NEXT_STEP_GENERIC
+      );
+    if (!body) return;
+
+    try {
+      const think = this as unknown as {
+        session: { appendMessage: (m: UIMessage) => Promise<void> };
+        _broadcastMessages?: () => void;
+      };
+      const msg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        parts: [{ type: "text", text: body }],
+      };
+      await think.session.appendMessage(msg);
+      think._broadcastMessages?.();
+      this._turnCodemodeApiStopAssistantInsertedOk = true;
+    } catch (e) {
+      console.error("[EdgeClaw][codemode-api-stop] Retry: failed to append assistant notice:", e);
+    }
   }
 
   private isBrowserTool(toolName: string): boolean {
@@ -3079,6 +3809,10 @@ export class MainAgent extends BaseThinkWithVoice {
         `compactionSegmentPromptTokensBefore≈${this._turnCompactionSegmentTokensBefore} ` +
         `compactionSegmentPromptTokensAfter≈${this._turnCompactionSegmentTokensAfter}`
     );
+
+    await this.maybeInjectCodemodeFailureFallbackAssistantMessage(result);
+    await this.maybeInjectCodemodeApiStopAssistantMessage(result);
+    this.maybeEmitCodemodeApiStopEndOfTurnTelemetry();
 
     await this.hooks.onChatResponse.run({ ...result, requestId: this.requestId });
     // Typed assistant text is already persisted and streamed to the **chat**

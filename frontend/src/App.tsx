@@ -10,6 +10,7 @@ import { SkillsPage }    from "./pages/SkillsPage";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { SubAgentsPage } from "./pages/SubAgentsPage";
 import { AgentBrowsingPage } from "./pages/AgentBrowsingPage";
+import { DEFAULT_CODEMODE_GUIDANCE_NOTES } from "./constants/codemodeGuidanceDefaults";
 
 const NAV_ITEMS: NavItem[] = [
   "Chat",
@@ -26,6 +27,8 @@ const NAV_ITEMS: NavItem[] = [
 const DEFAULT_SETTINGS: FeatureSettings = {
   enableBrowserTools: false,
   enableCodeExecution: false,
+  codemodeToolSurfaceEnabled: true,
+  codemodeAutoFallbackToLegacyTools: true,
   enableMcp: false,
   enableVoice: false,
   observabilityLevel: "info",
@@ -37,6 +40,8 @@ const DEFAULT_SETTINGS: FeatureSettings = {
   voiceFluxEotThreshold: 0.7,
   voiceFluxEotTimeoutMs: 5000,
   voiceFluxEagerEotThreshold: undefined,
+  codemodeGuidanceEnabled: true,
+  codemodeGuidanceNotes: DEFAULT_CODEMODE_GUIDANCE_NOTES,
 };
 
 const SETTINGS_STORAGE_KEY = "cf-truth-settings";

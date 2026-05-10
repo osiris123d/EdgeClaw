@@ -16,6 +16,17 @@ export type NavItem =
 export interface FeatureSettings {
   enableBrowserTools: boolean;
   enableCodeExecution: boolean;
+  /**
+   * When `true`, Gateway-visible tool schemas may compress MCP/OpenAPI-ish tools behind
+   * `codemode` (sandbox relay). Explicit `false` keeps legacy wide tool definitions.
+   * The Worker env `ENABLE_CODEMODE_TOOL_SURFACE=false` is a global deny that overrides this.
+   */
+  codemodeToolSurfaceEnabled: boolean;
+  /**
+   * When `true`, Codemode router sanity failures downgrade to legacy wide tools quietly (still logged server-side).
+   * When `false`, the user receives a prominent in-chat notice in addition.
+   */
+  codemodeAutoFallbackToLegacyTools: boolean;
   enableMcp: boolean;
   enableVoice: boolean;
   observabilityLevel: "off" | "error" | "info" | "debug";
@@ -60,6 +71,14 @@ export interface FeatureSettings {
    * = disabled. Range 0.3–0.9 when set.
    */
   voiceFluxEagerEotThreshold?: number;
+  /**
+   * Inject workspace-specific MCP/Codemode hints into the agent (additive). When disabled or notes
+   * are blank after trim, the server skips injection.
+   * @default true
+   */
+  codemodeGuidanceEnabled: boolean;
+  /** Free-form lines; capped (2000) on the server. @see DEFAULT_CODEMODE_GUIDANCE_NOTES pattern */
+  codemodeGuidanceNotes: string;
 }
 
 export interface ChatMessage {

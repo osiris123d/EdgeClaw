@@ -118,6 +118,11 @@ export interface Variables {
   ENABLE_BROWSER_TOOLS?: string;
   ENABLE_BROWSER_TOOL_DEBUG?: string;
   ENABLE_CODE_EXECUTION?: string;
+  /**
+   * Set to "false" to disable Codemode Gateway tool compression (expose full registry).
+   * When unset, defaults to enabled in `getRuntimeConfig()` if `LOADER` is bound.
+   */
+  ENABLE_CODEMODE_TOOL_SURFACE?: string;
   ENABLE_MCP?: string;
   ENABLE_VOICE?: string;
   /** Set to "true" to enable the session-skills feature (requires SKILLS_BUCKET R2 binding). */
@@ -262,6 +267,11 @@ export interface Env
   ENABLE_BROWSER_TOOLS?: string;
   ENABLE_BROWSER_TOOL_DEBUG?: string;
   ENABLE_CODE_EXECUTION?: string;
+  /**
+   * Set to "false" to disable Codemode Gateway tool compression (expose full registry).
+   * When unset, defaults to enabled in `getRuntimeConfig()` if `LOADER` is bound.
+   */
+  ENABLE_CODEMODE_TOOL_SURFACE?: string;
   ENABLE_MCP?: string;
   ENABLE_VOICE?: string;
   ENABLE_SKILLS?: string;
@@ -346,6 +356,8 @@ export interface RuntimeFeatureFlags {
   enableBrowserTools: boolean;
   enableBrowserToolDebug: boolean;
   enableCodeExecution: boolean;
+  /** Prefer minimal Gateway tool surface (`codemode` + policy-direct tools). */
+  enableCodemodeToolSurface: boolean;
   enableMcp: boolean;
   enableVoice: boolean;
   /** True when ENABLE_SKILLS=true AND SKILLS_BUCKET binding is present. */
@@ -402,6 +414,10 @@ export function getRuntimeConfig(env: Env): RuntimeConfig {
       enableBrowserTools: parseBooleanFlag(getVar(env, "ENABLE_BROWSER_TOOLS"), false),
       enableBrowserToolDebug: parseBooleanFlag(getVar(env, "ENABLE_BROWSER_TOOL_DEBUG"), false),
       enableCodeExecution: parseBooleanFlag(getVar(env, "ENABLE_CODE_EXECUTION"), false),
+      enableCodemodeToolSurface: parseBooleanFlag(
+        getVar(env, "ENABLE_CODEMODE_TOOL_SURFACE"),
+        true
+      ),
       enableMcp: parseBooleanFlag(getVar(env, "ENABLE_MCP"), false),
       enableVoice: parseBooleanFlag(getVar(env, "ENABLE_VOICE"), false),
       // Skills require both the feature flag AND the R2 bucket binding.

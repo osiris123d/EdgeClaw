@@ -64,7 +64,16 @@ export function AssistantAnswerBody({ content, isStreaming, startedAt }: Assista
           </Markdown>
         </div>
       )}
-      {isStreaming && <div className="assistant-answer-cursor" aria-hidden="true" />}
+      {isStreaming && !showWarmup ? (
+        <div className="assistant-answer-stream-footer" role="status" aria-live="polite">
+          <span className="assistant-stream-dots" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
+          <span className="assistant-stream-label">Reply in progress</span>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -25,6 +25,7 @@ import {
   updateMcpServer,
 } from "../lib/mcpApi";
 import { openOAuthPopup, type OAuthPopupAbort } from "../lib/mcpOAuth";
+import { CodemodeGuidanceCard } from "../components/settings/CodemodeGuidanceCard";
 
 interface SettingsPageProps {
   settings: FeatureSettings;
@@ -1506,6 +1507,27 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
             Enable code execution
           </label>
           <label>
+            <input type="checkbox" checked={settings.codemodeToolSurfaceEnabled}
+              onChange={(e) => set("codemodeToolSurfaceEnabled", e.target.checked)} />
+            Narrow Gateway tool schemas (Codemode surface)
+          </label>
+          <p className="muted" style={{ gridColumn: "1 / -1", marginTop: "-0.5rem" }}>
+            When off, MCP and helpers stay runnable but the AI sees full per-tool schemas. If the
+            Worker sets <code>ENABLE_CODEMODE_TOOL_SURFACE=false</code>, compression stays disabled
+            regardless of this checkbox.
+          </p>
+          <label>
+            <input
+              type="checkbox"
+              checked={settings.codemodeAutoFallbackToLegacyTools}
+              onChange={(e) => set("codemodeAutoFallbackToLegacyTools", e.target.checked)}
+            />
+            Auto-fallback quietly when Codemode router sanity checks fail
+          </label>
+          <p className="muted" style={{ gridColumn: "1 / -1", marginTop: "-0.5rem" }}>
+            When off, a visible notice is added while still widening Gateway tools so chat can continue.
+          </p>
+          <label>
             <input type="checkbox" checked={settings.enableMcp}
               onChange={(e) => set("enableMcp", e.target.checked)} />
             Enable MCP
@@ -1516,6 +1538,13 @@ export function SettingsPage({ settings, onChange, sessionId }: SettingsPageProp
             Enable voice
           </label>
         </div>
+
+        <CodemodeGuidanceCard
+          settings={settings}
+          onChangeSettings={onChange}
+          setField={set}
+          showEffectivePreview={import.meta.env.DEV || settings.observabilityLevel === "debug"}
+        />
 
         {/* ── MCP Servers ── */}
         <section className="settings-card">
