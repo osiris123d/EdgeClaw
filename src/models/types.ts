@@ -279,6 +279,14 @@ export interface ModelBindings {
    * Built by {@link buildModelBindingsForAiGateway} in `src/lib/agentObservability.ts`.
    */
   aiGatewayMetadataJson?: string;
+  /**
+   * Correlation for `[EdgeClaw][aig-fetch]` lifecycle logs only (no payloads).
+   * Optional — omit when resolving models outside a tracked chat turn.
+   */
+  gatewayFetchLog?: {
+    requestId?: string;
+    streamId?: string;
+  };
 }
 
 /**

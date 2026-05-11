@@ -70,3 +70,21 @@ export const TESTER_SUBAGENT_TOOL_DENY = new Set<string>([
   "save_project_note",
   "delete_project_note",
 ]);
+
+/**
+ * Headless MCP / Codemode / OpenAPI delegation — deny browser client tools defensively plus the
+ * standard orchestrator-only keys (workflow / scheduled-task / preemptive promotion tool names).
+ * Also denies {@code list_tasks} (ToolAgent must not drive task orchestration).
+ * {@link ToolAgentThinkFacet#getTools} composes {@link BaseSubAgentThink#getTools} only — this set
+ * preempts regressions if the base surface expands.
+ */
+export const TOOL_AGENT_SUBAGENT_TOOL_DENY = new Set<string>([
+  ...CODER_SUBAGENT_TOOL_DENY,
+  "list_tasks",
+  "browser_search",
+  "browser_execute",
+  "browser_session",
+]);
+
+/** Regression contract — mirrors {@link TOOL_AGENT_SUBAGENT_TOOL_DENY} keys sorted. */
+export const TOOL_AGENT_SUBAGENT_TOOL_DENY_KEYS: readonly string[] = [...TOOL_AGENT_SUBAGENT_TOOL_DENY].sort();

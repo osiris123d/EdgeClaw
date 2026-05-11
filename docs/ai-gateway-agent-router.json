@@ -47,7 +47,77 @@
       },
       "outputs": {
         "true":  { "elementId": "coder-0" },
+        "false": { "elementId": "chk-tool-agent" }
+      }
+    },
+
+    {
+      "id": "chk-tool-agent",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.agent": { "$eq": "ToolAgent" }
+        }
+      },
+      "outputs": {
+        "true":  { "elementId": "chk-tool-task-mcp" },
         "false": { "elementId": "chk-brow" }
+      }
+    },
+
+    {
+      "id": "chk-tool-task-mcp",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.task": { "$eq": "mcp_api" }
+        }
+      },
+      "outputs": {
+        "true":  { "elementId": "tool-heavy-0" },
+        "false": { "elementId": "chk-tool-task-extapi" }
+      }
+    },
+
+    {
+      "id": "chk-tool-task-extapi",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.task": { "$eq": "external_api" }
+        }
+      },
+      "outputs": {
+        "true":  { "elementId": "tool-heavy-0" },
+        "false": { "elementId": "chk-tool-task-orch" }
+      }
+    },
+
+    {
+      "id": "chk-tool-task-orch",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.task": { "$eq": "tool_orchestration" }
+        }
+      },
+      "outputs": {
+        "true":  { "elementId": "tool-heavy-0" },
+        "false": { "elementId": "chk-tool-task-util" }
+      }
+    },
+
+    {
+      "id": "chk-tool-task-util",
+      "type": "conditional",
+      "properties": {
+        "conditions": {
+          "metadata.task": { "$eq": "utility" }
+        }
+      },
+      "outputs": {
+        "true":  { "elementId": "tool-util-0" },
+        "false": { "elementId": "tool-heavy-0" }
       }
     },
 
@@ -185,6 +255,92 @@
       "properties": {
         "provider": "workers-ai",
         "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "tool-heavy-0",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/moonshotai/kimi-k2.6",
+        "timeout": 90000,
+        "retries": 1
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "tool-heavy-1" }
+      }
+    },
+    {
+      "id": "tool-heavy-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/openai/gpt-oss-120b",
+        "timeout": 60000,
+        "retries": 1
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "tool-heavy-2" }
+      }
+    },
+    {
+      "id": "tool-heavy-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 45000,
+        "retries": 0
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "end" }
+      }
+    },
+
+    {
+      "id": "tool-util-0",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/google/gemma-4-26b-a4b-it",
+        "timeout": 30000,
+        "retries": 1
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "tool-util-1" }
+      }
+    },
+    {
+      "id": "tool-util-1",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/qwen/qwq-32b",
+        "timeout": 40000,
+        "retries": 1
+      },
+      "outputs": {
+        "success":  { "elementId": "end" },
+        "fallback": { "elementId": "tool-util-2" }
+      }
+    },
+    {
+      "id": "tool-util-2",
+      "type": "model",
+      "properties": {
+        "provider": "workers-ai",
+        "model": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
         "timeout": 45000,
         "retries": 0
       },

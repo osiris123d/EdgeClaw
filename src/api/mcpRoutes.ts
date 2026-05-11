@@ -57,6 +57,10 @@ export interface McpRouteAdapter {
       headers?: Record<string, string>;
       /** @deprecated Use headers instead. */
       token?: string;
+      /** Persisted MCP OAuth callback origin (Agents `callbackHost`). */
+      callbackHost?: string;
+      callbackPath?: string;
+      agentsPrefix?: string;
     }
   ): Promise<McpDiscoverySnapshot>;
 
@@ -236,10 +240,18 @@ export async function handleMcpRoute(
         }
       }
 
+      let requestOrigin: string | undefined;
+      try {
+        requestOrigin = new URL(request.url).origin;
+      } catch {
+        requestOrigin = undefined;
+      }
+
       const snapshot = await agent.mcpAddServer(b.name.trim(), b.url.trim(), {
         transport: transportResult,
         headers: b.headers as Record<string, string> | undefined,
         token: typeof b.token === "string" ? b.token : undefined,
+        ...(requestOrigin ? { callbackHost: requestOrigin } : {}),
       });
       return json(snapshot);
     }

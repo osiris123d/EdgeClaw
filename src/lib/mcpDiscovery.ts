@@ -125,8 +125,8 @@ export const EMPTY_RAW_SDK_STATE: RawSdkMcpState = {
 // ── Persisted server config ───────────────────────────────────────────────────
 //
 // What MainAgent stores in the DO's SQLite via configure()/getConfig().
-// Persisted fields: identity + connection config + safe display metadata.
-// Never persisted: runtime state, SDK-derived data, transient OAuth state.
+// Persisted fields: identity + connection config + OAuth callback routing + safe display metadata.
+// Never persisted: live MCP connection handle, runtime SDK-only negotation payloads beyond what we store above.
 //
 // Sensitive fields (headers, token) are NEVER returned to clients.
 // They are stripped by _mcpConfigForSnapshot() before reaching buildDiscoverySnapshot().
@@ -171,6 +171,36 @@ export interface PersistedMcpServer {
    */
   token?: string;
 
+  /**
+   * OAuth redirect origin for MCP (`callbackHost` in Agents `addMcpServer`).
+   * Required for ToolAgent / DO cold-start when no HTTP request is available to derive the origin.
+   */
+  callbackHost?: string;
+  /** Optional OAuth callback path (`callbackPath` in Agents SDK). */
+  callbackPath?: string;
+  /** Agents routing prefix for default callback URL (SDK default `"agents"`). */
+  agentsPrefix?: string;
+  /**
+   * Last OAuth authorize URL when known — stripped from {@link PersistedMcpServerSafe} snapshots.
+   */
+  authUrl?: string;
+
+  /**
+   * When false, this server does not use MCP OAuth (e.g. Cloudflare Code Mode already authorized).
+   * ToolAgent restore must not inject OAuth callback routing or treat missing authUrl as fatal.
+   * Populated from live discovery when syncing to ToolAgent; optional on older persisted rows.
+   */
+  authRequired?: boolean;
+
+  /** SDK MCP server id from live discovery (merged for ToolAgent delegation only). */
+  mcpSdkServerId?: string;
+
+  /** Normalized lifecycle state from discovery at delegation time (e.g. "ready"). */
+  mcpRuntimeState?: string;
+
+  /** Tool count from discovery at delegation time (same ordering as snapshot toolCount). */
+  mcpToolCount?: number;
+
   /** ISO timestamp when this server config was first created. */
   createdAt: string;
 
@@ -182,12 +212,26 @@ export interface PersistedMcpServer {
   updatedAt: string;
 }
 
+/** Drops OAuth callback / authorize URL fields — used when live discovery says auth is not required. */
+export function stripPersistedMcpServerOAuthRoutingFields(
+  server: PersistedMcpServer
+): PersistedMcpServer {
+  const {
+    callbackHost: _ch,
+    callbackPath: _cp,
+    agentsPrefix: _ap,
+    authUrl: _au,
+    ...rest
+  } = server;
+  return rest;
+}
+
 /**
  * Safe (credential-free) projection of PersistedMcpServer for use inside
  * buildDiscoverySnapshot().  Enforces at compile time that headers and token
  * never reach the snapshot builder or any API response.
  */
-export type PersistedMcpServerSafe = Omit<PersistedMcpServer, "headers" | "token">;
+export type PersistedMcpServerSafe = Omit<PersistedMcpServer, "headers" | "token" | "authUrl">;
 
 /**
  * Migrate a raw stored object to the current PersistedMcpServer shape.
@@ -218,6 +262,9 @@ export function migratePersistedMcpServer(raw: unknown): PersistedMcpServer {
     throw new Error("[EdgeClaw] migratePersistedMcpServer: missing or invalid \"url\" field");
   }
 
+  const optTrim = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim() ? v.trim() : undefined;
+
   return {
     id:        typeof r.id === "string" && r.id.trim() ? r.id : crypto.randomUUID(),
     name:      r.name.trim(),
@@ -230,6 +277,38 @@ export function migratePersistedMcpServer(raw: unknown): PersistedMcpServer {
                  ? (r.headers as Record<string, string>)
                  : undefined,
     token:     typeof r.token === "string" ? r.token : undefined,
+    callbackHost: optTrim(r.callbackHost) ?? optTrim(r.callback_host),
+    callbackPath: optTrim(r.callbackPath) ?? optTrim(r.callback_path),
+    agentsPrefix: optTrim(r.agentsPrefix) ?? optTrim(r.agents_prefix),
+    authUrl: optTrim(r.authUrl) ?? optTrim(r.auth_url),
+    authRequired:
+      typeof r.authRequired === "boolean"
+        ? r.authRequired
+        : typeof r.auth_required === "boolean"
+          ? r.auth_required
+          : r.auth && typeof r.auth === "object" && !Array.isArray(r.auth)
+            ? (r.auth as { required?: unknown }).required === true
+              ? true
+              : (r.auth as { required?: unknown }).required === false
+                ? false
+                : undefined
+            : undefined,
+    mcpSdkServerId:
+      optTrim(r.mcpSdkServerId) ??
+      optTrim(r.mcp_sdk_server_id) ??
+      optTrim(r.sdkServerId) ??
+      optTrim(r.sdk_server_id),
+    mcpRuntimeState:
+      optTrim(r.mcpRuntimeState) ??
+      optTrim(r.mcp_runtime_state) ??
+      optTrim(r.runtimeState) ??
+      optTrim(r.runtime_state),
+    mcpToolCount:
+      typeof r.mcpToolCount === "number" && Number.isFinite(r.mcpToolCount)
+        ? r.mcpToolCount
+        : typeof r.mcp_tool_count === "number" && Number.isFinite(r.mcp_tool_count)
+          ? r.mcp_tool_count
+          : undefined,
     createdAt,
     updatedAt,
   };
@@ -957,6 +1036,72 @@ export function buildDiscoverySnapshot(
     totalResources: resources.length,
     snapshotAt: now,
   };
+}
+
+/**
+ * Merge persisted MCP rows with a live {@link McpDiscoverySnapshot} before ToolAgent RPC sync.
+ * Ensures {@link PersistedMcpServer.authRequired} and runtime hints match MainAgent's connected SDK view.
+ */
+function normalizeMcpUrlForDiscoveredMatch(url: string): string {
+  const s = typeof url === "string" ? url.trim() : "";
+  if (!s) return "";
+  try {
+    const u = new URL(s);
+    const path = u.pathname.replace(/\/+$/, "") || "";
+    return `${u.protocol}//${u.host}${path}`.toLowerCase();
+  } catch {
+    return s.toLowerCase();
+  }
+}
+
+export function mergePersistedMcpServersWithDiscoverySnapshot(
+  persisted: PersistedMcpServer[],
+  snapshot: McpDiscoverySnapshot
+): PersistedMcpServer[] {
+  const byId = new Map(snapshot.servers.map((s) => [s.id, s]));
+  const byName = new Map(snapshot.servers.map((s) => [s.name, s]));
+  const byUrl = new Map<string, DiscoveredMcpServer>();
+  for (const s of snapshot.servers) {
+    const k = normalizeMcpUrlForDiscoveredMatch(s.url);
+    if (!k) continue;
+    if (!byUrl.has(k)) byUrl.set(k, s);
+  }
+
+  return persisted.map((p) => {
+    const disc =
+      byId.get(p.id) ??
+      byName.get(p.name) ??
+      byUrl.get(normalizeMcpUrlForDiscoveredMatch(p.url));
+    if (!disc) {
+      return { ...p };
+    }
+    const authRequired =
+      typeof disc.auth.required === "boolean"
+        ? disc.auth.required
+        : p.authRequired !== true &&
+            (disc.state === "ready" || disc.state === "degraded") &&
+            typeof disc.toolCount === "number" &&
+            disc.toolCount > 0 &&
+            Boolean(disc.sdkServerId)
+          ? false
+          : p.authRequired;
+    const mcpToolCount =
+      typeof disc.toolCount === "number" && Number.isFinite(disc.toolCount)
+        ? disc.toolCount
+        : p.mcpToolCount;
+    const merged: PersistedMcpServer = {
+      ...p,
+      authRequired,
+      mcpSdkServerId: disc.sdkServerId ?? p.mcpSdkServerId ?? undefined,
+      mcpRuntimeState: disc.state ?? p.mcpRuntimeState,
+      mcpToolCount,
+    };
+
+    if (authRequired === false) {
+      return stripPersistedMcpServerOAuthRoutingFields(merged);
+    }
+    return merged;
+  });
 }
 
 // ── Log-safe sanitizer ────────────────────────────────────────────────────────

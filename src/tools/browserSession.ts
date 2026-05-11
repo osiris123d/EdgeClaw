@@ -17,12 +17,12 @@
 import { tool, zodSchema } from "ai";
 import { z } from "zod";
 import type { ToolSet } from "ai";
-import { BrowserSessionManager } from "../browserSession/BrowserSessionManager";
-import { BrowserActionSchema } from "../browserSession/browserActions";
+import { BrowserSessionManager } from "../browserSession/BrowserSessionManager.js";
+import { BrowserActionSchema } from "../browserSession/browserActions.js";
 import {
   mergeBrowserSessionLaunchFromUserText,
   sanitizeLaunchTaskForStorage,
-} from "../agents/browserSessionUserMessageMerge";
+} from "../agents/browserSessionUserMessageMerge.js";
 
 const BrowserSessionOperationSchema = z.discriminatedUnion("operation", [
   z.object({

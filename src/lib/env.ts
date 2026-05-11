@@ -124,6 +124,16 @@ export interface Variables {
    */
   ENABLE_CODEMODE_TOOL_SURFACE?: string;
   ENABLE_MCP?: string;
+  /**
+   * Optional `https://…` origin for MCP OAuth (`callbackHost`) when no HTTP Request is present
+   * (ToolAgent MCP restore / DO cold start). Use your Worker public URL origin.
+   */
+  EDGECLAW_PUBLIC_ORIGIN?: string;
+  /**
+   * When `"true"`, Worker sets `globalThis.EDGECLAW_CODEMODE_WIRE_DEBUG` so delegated MCP / codemode
+   * paths emit `[EdgeClaw][codemode-wire-delegated]` diagnostics (no payloads). Wired in `server.ts`.
+   */
+  EDGECLAW_CODEMODE_WIRE_DEBUG?: string;
   ENABLE_VOICE?: string;
   /** Set to "true" to enable the session-skills feature (requires SKILLS_BUCKET R2 binding). */
   ENABLE_SKILLS?: string;
@@ -236,6 +246,18 @@ export interface Variables {
    * (isolated repro DOs — see `src/repro/`). Off by default.
    */
   ENABLE_SUBAGENT_REPRO_ENDPOINT?: string;
+  /** When true, register {@link MainAgent} `delegate_tool_task` and allow ToolAgent delegation. */
+  ENABLE_TOOL_AGENT_DELEGATION?: string;
+  /**
+   * When true (with {@link ENABLE_TOOL_AGENT_DELEGATION}), narrow MainAgent `activeTools` to hide
+   * MCP / Codemode / legacy `execute` from the LLM — use ToolAgent for heavy tool orchestration.
+   */
+  ENABLE_MAIN_TOOL_SURFACE_REDUCTION?: string;
+  /**
+   * Max milliseconds MainAgent awaits ToolAgent `rpcCollectChatTurn` for `delegate_tool_task`
+   * (default 600000). Bounded to 10000–3600000 when set.
+   */
+  TOOL_AGENT_DELEGATION_TIMEOUT_MS?: string;
   /**
    * Optional Bearer for repro routes when set (same pattern as `DEBUG_ORCHESTRATION_TOKEN`).
    */
@@ -273,6 +295,10 @@ export interface Env
    */
   ENABLE_CODEMODE_TOOL_SURFACE?: string;
   ENABLE_MCP?: string;
+  /** Top-level alias for {@link Variables.EDGECLAW_PUBLIC_ORIGIN} when bound outside `Variables`. */
+  EDGECLAW_PUBLIC_ORIGIN?: string;
+  /** Top-level alias for {@link Variables.EDGECLAW_CODEMODE_WIRE_DEBUG}. */
+  EDGECLAW_CODEMODE_WIRE_DEBUG?: string;
   ENABLE_VOICE?: string;
   ENABLE_SKILLS?: string;
   ENABLE_GIT_INTEGRATION_TOOLS?: string;
@@ -309,6 +335,15 @@ export interface Env
   ENABLE_DEBUG_ORCHESTRATION_ENDPOINT?: string;
   DEBUG_ORCHESTRATION_TOKEN?: string;
   ENABLE_SUBAGENT_REPRO_ENDPOINT?: string;
+  /** When true, register {@link MainAgent} `delegate_tool_task` and allow ToolAgent delegation. */
+  ENABLE_TOOL_AGENT_DELEGATION?: string;
+  /**
+   * When true (with {@link ENABLE_TOOL_AGENT_DELEGATION}), narrow MainAgent `activeTools` to hide
+   * MCP / Codemode / legacy `execute` from the LLM — use ToolAgent for heavy tool orchestration.
+   */
+  ENABLE_MAIN_TOOL_SURFACE_REDUCTION?: string;
+  /** @see Variables.TOOL_AGENT_DELEGATION_TIMEOUT_MS */
+  TOOL_AGENT_DELEGATION_TIMEOUT_MS?: string;
   SUBAGENT_REPRO_TOKEN?: string;
   // Secrets are injected as top-level env fields in Workers.
   ANTHROPIC_API_KEY?: string;
@@ -362,6 +397,10 @@ export interface RuntimeFeatureFlags {
   enableVoice: boolean;
   /** True when ENABLE_SKILLS=true AND SKILLS_BUCKET binding is present. */
   enableSkills: boolean;
+  /** `delegate_tool_task` + ToolAgent RPC path. */
+  enableToolAgentDelegation: boolean;
+  /** Narrow MainAgent visible tools (requires ToolAgent delegation). */
+  enableMainToolSurfaceReduction: boolean;
 }
 
 export interface RuntimeConfig {
@@ -424,6 +463,14 @@ export function getRuntimeConfig(env: Env): RuntimeConfig {
       enableSkills:
         parseBooleanFlag(getVar(env, "ENABLE_SKILLS"), false) &&
         hasSkillsBucket(env),
+      enableToolAgentDelegation: parseBooleanFlag(
+        getVar(env, "ENABLE_TOOL_AGENT_DELEGATION"),
+        false
+      ),
+      enableMainToolSurfaceReduction: parseBooleanFlag(
+        getVar(env, "ENABLE_MAIN_TOOL_SURFACE_REDUCTION"),
+        false
+      ),
     },
   };
 }

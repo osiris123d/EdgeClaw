@@ -32,6 +32,7 @@ import type { Observability } from "../lib/observability";
  */
 import { createOpenAI } from "@ai-sdk/openai";
 import type { LanguageModel } from "ai";
+import { createAiGatewayCompatInstrumentedFetch } from "./aiGatewayCompatFetch";
 
 /** Default AI Gateway dynamic route: all route classes hit `dynamic/agent-router` unless overridden via `routeClassModelMap`. */
 const DEFAULT_ROUTE_CLASS_MODEL_MAP: Record<RouteClass, string> = {
@@ -805,6 +806,11 @@ export function resolveLanguageModel(
       `cf-aig-authorization=${gatewayAuthConfigured ? "configured" : "missing"}`
   );
 
+  const instrumentedFetch = createAiGatewayCompatInstrumentedFetch(
+    globalThis.fetch.bind(globalThis),
+    bindings.gatewayFetchLog
+  );
+
   return createOpenAI({
     baseURL: compatBaseUrl,
     // AI SDK OpenAI provider requires a non-empty apiKey at initialization time.
@@ -827,7 +833,7 @@ export function resolveLanguageModel(
         outgoingHeaders.set("cf-aig-metadata", bindings.aiGatewayMetadataJson.trim());
       }
 
-      return fetch(input, {
+      return instrumentedFetch(input, {
         ...init,
         headers: outgoingHeaders,
       });

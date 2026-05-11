@@ -53,7 +53,7 @@ test("step and resume schema include actions with optional cdpScript", () => {
 });
 
 test("BrowserAction schema is imported and reused", () => {
-  assertIncludes(source, "import { BrowserActionSchema } from \"../browserSession/browserActions\";");
+  assertIncludes(source, "import { BrowserActionSchema } from \"../browserSession/browserActions.js\";");
   const count = (source.match(/\.array\(BrowserActionSchema\)/g) || []).length;
   assertTrue(count >= 3, "Expected BrowserActionSchema to be reused in launch, step, and resume");
 });

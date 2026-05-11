@@ -82,6 +82,12 @@
 			"new_sqlite_classes": [
 				"EdgeclawBrowsingAgent"
 			]
+		},
+		{
+			"tag": "v8-tool-agent-subagent",
+			"new_sqlite_classes": [
+				"ToolAgent"
+			]
 		}
 	],
 	"triggers": {

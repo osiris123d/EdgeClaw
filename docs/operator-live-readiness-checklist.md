@@ -137,6 +137,29 @@ When **`SUBAGENT_COORDINATOR`** is bound, production coding delegation uses **Ma
 
 ---
 
+## 9. ToolAgent delegation & MainAgent tool-surface reduction (optional)
+
+**Naming:** Use **ToolAgent** as the AI Gateway **`metadata.agent`** label for this facet — it reflects **tool orchestration** (MCP, Codemode relay, OpenAPI, HTTP), not “HTTP APIs only.”
+
+**Worker `vars`** (both parse as booleans in `src/lib/env.ts`; **defaults remain `false`** unless explicitly set):
+
+| Var | Default | Effect |
+|-----|---------|--------|
+| **`ENABLE_TOOL_AGENT_DELEGATION`** | `false` | When `true`, **MainAgent** registers **`delegate_tool_task`** and can RPC the **ToolAgent** Durable Object for delegated turns. |
+| **`ENABLE_MAIN_TOOL_SURFACE_REDUCTION`** | `false` | When **`true` together with** **`ENABLE_TOOL_AGENT_DELEGATION`**, **MainAgent** narrows Gateway **`activeTools`** so **`codemode`**, **`execute`**, **`mcp_*`**, and **`openapi_*`** are **not advertised** to the MainAgent model (full registry remains for execution; MCP/OpenAPI-class work is expected via **`delegate_tool_task`** → ToolAgent). |
+
+**Rollout**
+
+1. **Delegation off** — Today’s behavior: no **`delegate_tool_task`**; MCP/OpenAPI tools remain on **MainAgent** when MCP/Codemode settings allow.
+2. **Delegation on** — Enable **`ENABLE_TOOL_AGENT_DELEGATION=true`** on staging first; validate workloads and **`cf-aig-metadata`** (**`agent: ToolAgent`**, **`task`**: `mcp_api` | `external_api` | `tool_orchestration`). Align **`docs/ai-gateway-agent-router.json`** / **`docs/ai-gateway-agent-router-v2.json`** with any routing edits (`npm run test:coding-loop-e2e` includes router drift tests).
+3. **Reduction** — Leave **`ENABLE_MAIN_TOOL_SURFACE_REDUCTION=false`** until delegation is trusted; then enable **both** flags and monitor **`turn.summary`** **`toolSurface`** (`mode`, counts, delegation metadata).
+
+**Canary:** Prefer one environment or cohort at a time; watch gateway logs and **`toolSurface.delegatedToToolAgent`** / **`toolAgentGateway`** fields before widening reduction.
+
+**Related:** [`README.md`](../README.md) § MCP — ToolAgent delegation; [`coding-platform-architecture.md`](./coding-platform-architecture.md).
+
+---
+
 ## Validation phases
 
 ### Local / dev validation

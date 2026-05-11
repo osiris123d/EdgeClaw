@@ -12,6 +12,11 @@ import {
   buildCloudflareRequestInnerCode,
   buildOpenApiDescribeOperationInnerCode,
   buildOpenapiSearchInnerCode,
+  codemodeWireSafeErrorMessage,
+  codemodeWireStringifyToolResult,
+  coerceDelegatedRpcOkEnvelopeResult,
+  coerceStandaloneStructuredClonePortable,
+  ensureJsonSafeForCodemodeRelay,
   injectAccountIntoApiPath,
   pathUsesHostnameAsDeviceIdSegment,
   pathUsesLikelyHostnameAsDeviceSegment,
@@ -19,6 +24,8 @@ import {
   pickWrappedToolName,
   matchDeviceNeedle,
   pickDeviceRowsFromCloudflarePayload,
+  toCodemodeWireSerializable,
+  toDelegatedMcpRpcWireValue,
   tryParseJsonFromMcpToolResult,
   DEFAULT_DEVICE_LIST_PATH_TEMPLATES,
 } from "../codemodeRouterHelpers";
@@ -110,4 +117,107 @@ test("pickDeviceRowsFromCloudflarePayload + matchDeviceNeedle", () => {
   const rows = pickDeviceRowsFromCloudflarePayload(payload);
   const cand = matchDeviceNeedle(rows, "MEMHQ2375GK1");
   assert.equal(cand[0]?.deviceId, "550e8400-e29b-41d4-a716-446655440000");
+});
+
+class DurableObjectStub {}
+
+test("toCodemodeWireSerializable neutralizes host-object constructors for Rpc wire", () => {
+  const sanitized = toCodemodeWireSerializable({
+    ok: true,
+    nested: new DurableObjectStub(),
+    keep: { a: 1 },
+  }) as { nested: string; keep: { a: number } };
+  assert.equal(sanitized.nested, "[DurableObjectStub]");
+  assert.deepEqual(sanitized.keep, { a: 1 });
+});
+
+test("codemodeWireStringifyToolResult produces JSON even when payloads nest exotic stubs", () => {
+  const wire = codemodeWireStringifyToolResult({
+    endpoints: [{ x: new DurableObjectStub() }],
+  });
+  const parsed = JSON.parse(wire) as { result?: { endpoints?: Array<{ x: string }> } };
+  assert.ok(parsed.result);
+  assert.equal(parsed.result!.endpoints![0]!.x, "[DurableObjectStub]");
+});
+
+test("ensureJsonSafeForCodemodeRelay round-trips after toCodemodeWireSerializable", () => {
+  class RpcTarget {}
+  const out = ensureJsonSafeForCodemodeRelay({ a: 1, x: new RpcTarget() }) as { a: number; x: string };
+  assert.equal(out.a, 1);
+  assert.equal(out.x, "[RpcTarget]");
+});
+
+test("codemodeWireSafeErrorMessage never throws on exotic errors", () => {
+  const msg = codemodeWireSafeErrorMessage(
+    new Error(
+      'Could not serialize object of type "DurableObject". This type does not support serialization.'
+    )
+  );
+  assert.ok(msg.length > 0);
+  assert.match(msg, /Delegated tool returned a non-serializable value/);
+  assert.doesNotMatch(msg, /DurableObject/i);
+});
+
+test("codemodeWireSafeErrorMessage preserves [EdgeClaw] diagnostics that quote Rpc clone noise", () => {
+  const inner = 'Could not serialize object of type "DurableObject"';
+  const msg = codemodeWireSafeErrorMessage(
+    new Error(`[EdgeClaw] coerceDelegatedRpcOkEnvelopeResult: envelope_clone_failed (${inner})`)
+  );
+  assert.match(msg, /^\[EdgeClaw\] coerceDelegatedRpcOkEnvelopeResult/);
+  assert.match(msg, /DurableObject/i);
+  assert.doesNotMatch(msg, /Delegated tool returned a non-serializable value \(internal\)/);
+});
+
+test("toDelegatedMcpRpcWireValue yields structuredClone-safe envelopes for Agents RPC", () => {
+  class DurableObjectStub {}
+  const wired = toDelegatedMcpRpcWireValue({
+    content: [{ type: "text", text: JSON.stringify({ ok: true, endpoints: [{ path: "/a" }] }) }],
+    leak: new DurableObjectStub(),
+  }) as { content: unknown[]; leak: string };
+  assert.equal(wired.leak, "[DurableObjectStub]");
+  assert.doesNotThrow(() => structuredClone({ ok: true, result: wired }));
+});
+
+test("toDelegatedMcpRpcWireValue stringifies bigint and stays structuredClone-safe", () => {
+  const wired = toDelegatedMcpRpcWireValue({ count: 42n }) as { count: string };
+  assert.equal(wired.count, "42");
+  assert.doesNotThrow(() => structuredClone(wired));
+});
+
+test("toDelegatedMcpRpcWireValue json replacer neutralizes blocked ctor during stringify", () => {
+  class RpcTarget {}
+  const wired = toDelegatedMcpRpcWireValue({ x: new RpcTarget() }) as { x: string };
+  assert.equal(wired.x, "[RpcTarget]");
+  assert.doesNotThrow(() => structuredClone(wired));
+});
+
+test("coerceDelegatedRpcOkEnvelopeResult keeps MainAgent Rpc return envelope structuredClone-safe", () => {
+  const wired = toDelegatedMcpRpcWireValue({
+    content: [{ type: "text", text: JSON.stringify([{ method: "GET", path: "/x" }]) }],
+  }) as Record<string, unknown>;
+  const out = coerceDelegatedRpcOkEnvelopeResult(wired);
+  assert.deepEqual(out, wired);
+  assert.doesNotThrow(() => structuredClone({ ok: true, result: out }));
+});
+
+test("coerceStandaloneStructuredClonePortable normalizes MCP-shaped payload for RPC return", () => {
+  class DurableObjectStub {}
+  const leaky = {
+    content: [{ type: "text", text: JSON.stringify({ ok: true, endpoints: [] }) }],
+    extra: new DurableObjectStub(),
+  };
+  const out = coerceStandaloneStructuredClonePortable(
+    toDelegatedMcpRpcWireValue(leaky)
+  ) as { content: unknown[]; extra: string };
+  assert.equal(typeof out.extra, "string");
+  assert.ok(String(out.extra).includes("DurableObject"));
+  assert.doesNotThrow(() => structuredClone(out));
+});
+
+test("codemodeWireStringifyToolResult returns JSON for cyclic nested payload", () => {
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const wire = codemodeWireStringifyToolResult({ bad: cyclic });
+  const data = JSON.parse(wire) as { result?: unknown };
+  assert.ok(data.result !== undefined);
 });

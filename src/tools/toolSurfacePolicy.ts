@@ -19,6 +19,9 @@ const WORKFLOW_LAUNCH = new Set(["run_workflow"]);
 
 const BROWSER_HITL_TOOLS = new Set(["browser_session"]);
 
+/** MainAgent → ToolAgent RPC — must stay Gateway-visible under Codemode compression. */
+const SUBAGENT_TOOL_DELEGATION_TOOLS = new Set(["delegate_tool_task"]);
+
 /** Shared workspace tools that mutate external collaboration state / lifecycle. */
 const SHARED_WORKSPACE_MUTATORS = new Set([
   "shared_workspace_write",
@@ -73,7 +76,12 @@ export function classifyMergedToolsForSurface(tools: ToolSet): ToolClassificatio
       continue;
     }
 
-    if (WORKFLOW_LAUNCH.has(name) || SCHEDULING_TOOLS.has(name) || BROWSER_HITL_TOOLS.has(name)) {
+    if (
+      WORKFLOW_LAUNCH.has(name) ||
+      SCHEDULING_TOOLS.has(name) ||
+      BROWSER_HITL_TOOLS.has(name) ||
+      SUBAGENT_TOOL_DELEGATION_TOOLS.has(name)
+    ) {
       direct.add(name);
       continue;
     }

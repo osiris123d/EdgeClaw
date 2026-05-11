@@ -8,8 +8,9 @@
  * @see https://developers.cloudflare.com/ai-gateway/configuration/custom-metadata/
  */
 
-import type { ModelBindings } from "../models/types";
 import { parseSharedDelegationEnvelope } from "../workspace/delegationEnvelope";
+import type { ModelBindings } from "../models/types";
+import type { ToolAgentWorkloadKind } from "./toolAgentWorkloadKind";
 
 /** Full context we may thread through coordinator paths (session is UI / logs, not sent as a 6th gateway key). */
 export interface AgentObservabilityContext {
@@ -28,6 +29,8 @@ export type EdgeClawGatewayAgentName =
   | "SubagentCoordinatorThink"
   | "CoderAgent"
   | "TesterAgent"
+  /** Headless MCP / Codemode / OpenAPI delegation facet — narrow tool surface vs MainAgent. */
+  | "ToolAgent"
   /** Agent Browsing DO — matches AI Gateway `metadata.agent` conditional in `docs/ai-gateway-agent-router.json`. */
   | "BrowserAgent";
 
@@ -88,6 +91,7 @@ export function edgeClawGatewayAgentFromConstructorName(className: string): Edge
   if (className === "SubagentCoordinatorThink") return "SubagentCoordinatorThink";
   if (className === "CoderAgent") return "CoderAgent";
   if (className === "TesterAgent") return "TesterAgent";
+  if (className === "ToolAgent") return "ToolAgent";
   if (className === "EdgeclawBrowsingAgent") return "BrowserAgent";
   return "MainAgent";
 }
@@ -116,14 +120,53 @@ export function gatewayObservabilityFromDelegatedUserMessage(
   };
 }
 
+/**
+ * AI Gateway observability for {@link ToolAgent} RPC ingress.
+ *
+ * - `agent` is always **ToolAgent** (never Coder/Test role substitution).
+ * - `task` metadata (`AgentObservabilityContext.taskId`) carries **workload classification**.
+ * @param delegationBodyWorkloadMarkerRemoved — Delegate message after stripping the optional
+ *   `[[edgeclaw:tool-task-kind=…]]` lead line (`peelToolAgentWorkloadKindLeadLine().strippedMessage`), so
+ *   workspace envelopes remain parseable via {@link parseSharedDelegationEnvelope}.
+ */
+export function gatewayObservabilityForToolAgentMessage(
+  delegationBodyWorkloadMarkerRemoved: string,
+  workloadKind: ToolAgentWorkloadKind
+): Partial<AgentObservabilityContext> & { agent: "ToolAgent" } {
+  const trimmed =
+    typeof delegationBodyWorkloadMarkerRemoved === "string"
+      ? delegationBodyWorkloadMarkerRemoved.trim()
+      : "";
+  const parsed = parseSharedDelegationEnvelope(trimmed);
+
+  let projectId: string | undefined;
+  let envelopeRunCorrelation: string | undefined;
+
+  if (parsed) {
+    projectId = (parsed.controlPlaneProjectId?.trim() || parsed.projectId).trim() || undefined;
+    const rid = parsed.runId?.trim();
+    const tid = parsed.taskId?.trim();
+    envelopeRunCorrelation = rid || tid || undefined;
+  }
+
+  return {
+    agent: "ToolAgent",
+    ...(projectId ? { projectId } : {}),
+    ...(envelopeRunCorrelation ? { runId: envelopeRunCorrelation } : {}),
+    taskId: workloadKind,
+  };
+}
+
 /** Merges explicit turn observability with defaults for `cf-aig-metadata`. */
 export function buildModelBindingsForAiGateway(
   aiGatewayToken: string | undefined,
-  obs: Partial<AgentObservabilityContext> & { agent: EdgeClawGatewayAgentName }
+  obs: Partial<AgentObservabilityContext> & { agent: EdgeClawGatewayAgentName },
+  gatewayFetchLog?: ModelBindings["gatewayFetchLog"]
 ): ModelBindings {
   const record = buildAiGatewayMetadataRecord(obs);
   return {
     aiGatewayToken,
     aiGatewayMetadataJson: serializeAiGatewayMetadata(record),
+    ...(gatewayFetchLog ? { gatewayFetchLog } : {}),
   };
 }

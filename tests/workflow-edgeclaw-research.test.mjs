@@ -39,7 +39,7 @@ function makeStep() {
   };
 }
 
-/** Build callbacks mock for reportProgress + waitForApproval. */
+/** Build callbacks mock for reportProgress + waitForApproval + AI/R2 stubs. */
 function makeCallbacks({ approveOnWait = true } = {}) {
   const progressCalls = [];
   let waitForApprovalCalled = false;
@@ -56,6 +56,18 @@ function makeCallbacks({ approveOnWait = true } = {}) {
         throw err;
       }
     },
+    async aiResearch(topic, _url) {
+      return {
+        summary: `mock summary for ${topic}`,
+        insights: ["mock-insight-a", "mock-insight-b"],
+      };
+    },
+    async aiWriteReport(topic, summary, insights) {
+      return `mock report — ${topic}: ${summary} | ${insights.join(";")}`;
+    },
+    async persistToR2(topic, reportText) {
+      return `reports/mock-${topic.replace(/\s+/g, "-")}-${reportText.length}.md`;
+    },
   };
 
   return {
@@ -67,7 +79,7 @@ function makeCallbacks({ approveOnWait = true } = {}) {
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
-test("happy path — all three steps run and result has correct shape", async () => {
+test("happy path — workflow steps run and result has correct shape", async () => {
   const step   = makeStep();
   const { callbacks } = makeCallbacks();
 
@@ -77,7 +89,12 @@ test("happy path — all three steps run and result has correct shape", async ()
     callbacks,
   );
 
-  assert.deepEqual(step.calls, ["initialise", "gather-sources", "synthesise"]);
+  assert.deepEqual(step.calls, [
+    "initialise",
+    "gather-sources",
+    "synthesise",
+    "save-to-r2",
+  ]);
   assert.equal(result.topic, "AI in healthcare");
   assert.equal(typeof result.completedAt, "string");
   assert.equal(typeof result.sourceCount, "number");
@@ -114,7 +131,12 @@ test("approval path — waitForApproval is called when requireApproval = true", 
 
   // Read the getter AFTER the async call completes, not via destructuring.
   assert.equal(mock.waitForApprovalCalled, true);
-  assert.deepEqual(step.calls, ["initialise", "gather-sources", "synthesise"]);
+  assert.deepEqual(step.calls, [
+    "initialise",
+    "gather-sources",
+    "synthesise",
+    "save-to-r2",
+  ]);
 });
 
 test("no-approval path — waitForApproval is NOT called when requireApproval = false", async () => {
@@ -154,6 +176,7 @@ test("progress reporting — reportProgress called for each phase in order", asy
   assert.ok(phases.includes("initialise"),    "missing initialise progress");
   assert.ok(phases.includes("gather-sources"), "missing gather-sources progress");
   assert.ok(phases.includes("synthesise"),    "missing synthesise progress");
+  assert.ok(phases.includes("save-to-r2"), "missing save-to-r2 progress");
 
   const last = progressCalls.at(-1);
   assert.equal(last.percent, 1.0, "final progress call must be 100%");

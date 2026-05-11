@@ -188,6 +188,7 @@ import {
 } from "../lib/taskScheduler";
 import {
   buildDiscoverySnapshot,
+  mergePersistedMcpServersWithDiscoverySnapshot,
   migratePersistedMcpServer,
   type McpDiscoverySnapshot,
   type McpTransport,
@@ -197,6 +198,7 @@ import {
   type ServerRuntimeCache,
   EMPTY_RAW_SDK_STATE,
 } from "../lib/mcpDiscovery";
+import type { McpMirrorToolDescriptor } from "../lib/mcpToolAgentLiveReuse";
 import { createObservability, type Observability } from "../lib/observability";
 import { buildModelBindingsForAiGateway } from "../lib/agentObservability";
 import { getRuntimeConfig } from "../lib/env";
@@ -222,6 +224,8 @@ import {
 } from "../hooks";
 import { repairOpenAssistantToolCallsInModelMessages } from "../lib/repairInferenceToolCallHistory";
 import { truncateMessageForSubagentRpcInbound, type DelegationOptions, type SubAgentResult } from "./delegation";
+import { formatDelegateToolAgentMessage } from "./formatDelegateToolAgentMessage";
+import { computeMainAgentChatRecoveryDecision, detectDelegateFinalizedInMessages } from "./mainAgentChatRecoveryPolicy";
 import { createVoiceService, type VoiceService } from "../voice/VoiceService";
 import { formatSharedDelegationEnvelope } from "../workspace/delegationEnvelope";
 import { getSharedWorkspaceGateway } from "../workspace/sharedWorkspaceFactory";
@@ -235,6 +239,15 @@ import {
   formatCodemodeFailureAssistantMarkdown,
   isAssistantReplySilentAfterCodemodes,
 } from "../tools/codemodeVisibleFallback";
+import {
+  codemodeWireRawErrorMessage,
+  edgeClawRpcDelegatedMcpError,
+  coerceDelegatedRpcOkEnvelopeResult,
+  isCodemodeWireDebugEnabled,
+  logCodemodeWireDelegatedBoundary,
+  syncCodemodeWireDebugFromEnv,
+  toDelegatedMcpRpcWireValue,
+} from "../tools/codemodeRouterHelpers";
 import { runCodemodeRelayRouterSanity } from "../tools/codemodeRouterSanity";
 import type { CodemodeSanityRunnerResult } from "../tools/codemodeRouterSanity";
 import {
@@ -321,6 +334,22 @@ import {
 } from "./browserToolAvailability";
 import { isExplicitBrowserSessionStructuredUserMessage } from "./browserSessionUserMessageMerge";
 import { assertOrchestratorPromotionBoundary } from "./orchestratorPromotionBoundary";
+import {
+  applyMainAgentReducedActiveTools,
+  isMainAgentReductionHiddenToolName,
+} from "./mainAgentToolSurfaceReduction";
+import {
+  computeDelegateToolTaskTurnLatchesAndReply,
+  raceToolAgentDelegationRpc,
+  resolveToolAgentDelegationTimeoutMs,
+} from "./delegateToolTaskTurnOutcome";
+import {
+  evaluateMainAgentDelegateBeforeToolCallDecision,
+  isExplicitDelegateToToolAgentUserMessage,
+  mergeDelegationFailureTerminalStepConfig,
+  mergeStepConfigFreezeToolsForDelegationTerminal,
+} from "./mainAgentDelegateToolGuards";
+import { buildDelegationToolAgentToolSurfaceFields } from "./mainAgentDelegationToolSurface";
 
 /** First-party browser tools gated by main-chat Settings → Enable browser tools. */
 const MAIN_CHAT_BROWSER_TOOL_NAMES = new Set([
@@ -367,6 +396,13 @@ export interface McpServerOptions {
    * @example "https://my-worker.workers.dev"
    */
   callbackHost?: string;
+  /**
+   * Custom OAuth callback path (`callbackPath` in Agents SDK). Default constructs
+   * `/agents/{class}/{instance}/callback` under {@link callbackHost}.
+   */
+  callbackPath?: string;
+  /** Agents URL segment prefix for default MCP OAuth callback construction (SDK default `"agents"`). */
+  agentsPrefix?: string;
 }
 
 /** Shape returned by the SDK's addMcpServer() and our addServer() wrapper. */
@@ -449,6 +485,16 @@ export interface MainAgentConfig {
 
   /** Optional provider-backed browser session adapter. */
   browserSessionProvider?: BrowserSessionProvider;
+
+  /**
+   * Register `delegate_tool_task` (ToolAgent RPC). Defaults from `ENABLE_TOOL_AGENT_DELEGATION`.
+   */
+  enableToolAgentDelegation?: boolean;
+  /**
+   * Narrow MainAgent Gateway `activeTools` (hide MCP/Codemode/execute). Requires delegation enabled.
+   * Defaults from `ENABLE_MAIN_TOOL_SURFACE_REDUCTION`.
+   */
+  enableMainToolSurfaceReduction?: boolean;
 }
 
 /**
@@ -761,6 +807,65 @@ function clampVoiceFluxEager(n: number): number {
   return Math.min(0.9, Math.max(0.3, n));
 }
 
+/**
+ * Rpc trace for **`rpcExecuteDelegatedMcpTool`** (`MainAgent` @callable) — stable `wrangler tail` grep (no payloads).
+ *
+ * Successful ToolAgent mirror for `tool_WB0fsUJK_search`:
+ *   `[EdgeClaw][rpcExecuteDelegatedMcp] enter`
+ *   `[EdgeClaw][rpcExecuteDelegatedMcp] exit:return_ok_resultWire_plain toolName=tool_WB0fsUJK_search`
+ *
+ * If ToolAgent logs `mcpLiveMirrorTools:rpc_stub_threw` but MainAgent shows:
+ * - **no `enter`** → request failed at **RPC marshal before MainAgent** (often non-cloneable `input` on ToolAgent — see `mcpLiveMirrorTools` `rpc_precall` / `rpc_arg_input_wire_failed`).
+ * - **`enter` but no matching `exit:…`** → hang/isolate teardown before `finally` (inspect last `diagPhase` in logs if any Workers diagnostic appears).
+ * - **`exit:return_ok_resultWire_plain`** on MainAgent yet **stub still throws** → Workers RPC cloning the result **after** our plain-json envelope (framework/stub boundary), not MCP execute / openapi / parsing.
+ */
+function logRpcDelegatedMcpEnter(): void {
+  try {
+    console.warn("[EdgeClaw][rpcExecuteDelegatedMcp] enter");
+  } catch {
+    /* ignore console failures */
+  }
+}
+
+/** Emits `[EdgeClaw][rpcExecuteDelegatedMcp] exit:<lastPhase> toolName=<id>` — never logs payloads or resultWire. */
+function logRpcDelegatedMcpExit(toolName: string, lastPhase: string): void {
+  try {
+    console.warn(`[EdgeClaw][rpcExecuteDelegatedMcp] exit:${lastPhase} toolName=${toolName.slice(0, 120)}`);
+  } catch {
+    /* ignore console failures */
+  }
+}
+
+function rpcDelegatedStubPlainEnvelope(args: {
+  ok: boolean;
+  resultWire?: string;
+  error?: string;
+}): { ok: boolean; resultWire?: string; error?: string } {
+  try {
+    if (args.ok === true && typeof args.resultWire === "string") {
+      return JSON.parse(JSON.stringify({ ok: true as const, resultWire: args.resultWire })) as {
+        ok: boolean;
+        resultWire?: string;
+        error?: string;
+      };
+    }
+    const err =
+      typeof args.error === "string"
+        ? args.error
+        : codemodeWireRawErrorMessage(args.error ?? "unknown_rpc_error");
+    return JSON.parse(JSON.stringify({ ok: false as const, error: err.slice(0, 8000) })) as {
+      ok: boolean;
+      resultWire?: string;
+      error?: string;
+    };
+  } catch {
+    return {
+      ok: false,
+      error: "[EdgeClaw][rpcExecuteDelegatedMcpTool:stub_plain_envelope_failed]",
+    };
+  }
+}
+
 /** Durable Object `ctx.storage` key for the chosen aura-1 speaker (survives hibernation). */
 const EDGECLAW_AURA_TTS_SPEAKER_STORAGE_KEY = "edgeclaw.auraTtsSpeaker.v1";
 
@@ -871,6 +976,13 @@ export class MainAgent extends BaseThinkWithVoice {
    * Keep disabled unless explicitly required and configured.
    */
   protected enableMcp = false;
+  /** Opt-in `delegate_tool_task` + ToolAgent delegation path. */
+  protected enableToolAgentDelegation = false;
+  /**
+   * When true with {@link enableToolAgentDelegation}, MainAgent hides MCP/Codemode/execute from the LLM
+   * via `activeTools` filtering (full registry unchanged).
+   */
+  protected enableMainToolSurfaceReduction = false;
   /**
    * Voice: WebSocket + Workers AI STT/TTS. Requires `ENABLE_VOICE` / settings
    * and `env.AI`. When false, `beforeCallStart` refuses voice sessions.
@@ -902,6 +1014,8 @@ export class MainAgent extends BaseThinkWithVoice {
 
   // Per-turn accumulators reset in `beforeTurn` and flushed in `onChatResponse`.
   private _turnStartMs = 0;
+  /** Dedupes the zero-partial recovery assistant notice per interrupted fiber. */
+  private _recoveryZeroPartialNoticeFiberRequestId: string | undefined;
   private _turnToolCount = 0;
   private _turnStepCount = 0;
   private _turnInputTokens = 0;
@@ -939,6 +1053,38 @@ export class MainAgent extends BaseThinkWithVoice {
   private _turnToolSurfaceSchemaApproxAfter = 0;
   private _turnToolSurfaceWrappedCount = 0;
   private _turnToolSurfaceGatewayVisibleCount = 0;
+  /** `full` unless MainAgent MCP/Codemode reduction narrowed `activeTools`. */
+  private _turnToolSurfaceMode: "full" | "reduced" = "full";
+  private _turnMainToolCountBeforeReduction: number | undefined;
+  private _turnMainToolCountAfterReduction: number | undefined;
+  private _turnDelegatedToToolAgent = false;
+  private _turnToolAgentDelegationMeta: { agent: string; task?: string } | undefined;
+  /** After successful `delegate_tool_task`, blocks further MainAgent codemode/MCP/OpenAPI/`execute` this turn. */
+  private _turnToolAgentDelegationTerminal = false;
+  private _turnToolAgentDelegateOk = false;
+  private _turnToolAgentResultEmpty = false;
+  /** True if codemode / MCP / OpenAPI / `execute` ran on MainAgent after a successful delegate in the same turn. */
+  private _turnToolAgentOrchestrationAfterDelegate = false;
+  /** True after `delegate_tool_task` returned a failure for this turn (MCP bootstrap or other). */
+  private _turnToolAgentDelegationFailed = false;
+  /**
+   * Exact user-visible string returned from `delegate_tool_task` when {@link _turnToolAgentDelegationFailed}.
+   * Used to force the next inference step to emit this text verbatim (no model paraphrase).
+   */
+  private _turnToolAgentDelegateFailureExactReply = "";
+  /** Exact ToolAgent reply for the next step — deterministic assistant text (successful delegate). */
+  private _turnToolAgentDelegateSuccessExactReply = "";
+  /** True when ToolAgent MCP restore/bootstrap failed (subset of {@link _turnToolAgentDelegationFailed}). */
+  private _turnToolAgentBootstrapFailed = false;
+  /** Sanitized short error for turn.summary when {@link _turnToolAgentBootstrapFailed}. */
+  private _turnToolAgentBootstrapError = "";
+  /**
+   * True when {@link MainAgent.beforeTurn} took the explicit ToolAgent delegation gate
+   * (`toolChoice: required`, `activeTools: [delegate_tool_task]`, `maxSteps: 1`).
+   * Drives {@link MainAgent.beforeStep} coercion to `{ type: "tool", toolName: "delegate_tool_task" }`
+   * on step 0 so /compat gateways cannot ignore plain `"required"`, plus inference diagnostics.
+   */
+  private _turnDelegateGateStrictToolCall = false;
   /**
    * When non-null, every AI SDK `prepareStep` re-applies these names so continuation / tool-result
    * steps cannot accidentally widen schemas back to the full merged Think registry (`activeTools`
@@ -1050,6 +1196,7 @@ export class MainAgent extends BaseThinkWithVoice {
 
   constructor(ctx: DurableObjectState, env: Env, config: MainAgentConfig = {}) {
     super(ctx, env);
+    syncCodemodeWireDebugFromEnv(env);
 
     const runtime = getRuntimeConfig(env);
     this.rawEnableBrowserTools = this.getRawEnvString("ENABLE_BROWSER_TOOLS");
@@ -1071,6 +1218,11 @@ export class MainAgent extends BaseThinkWithVoice {
       config.enableCodemodeToolSurface ?? runtime.featureFlags.enableCodemodeToolSurface;
     this.codemodeSanityProbe = config.codemodeSanityProbe;
     this.enableMcp = config.enableMcp ?? runtime.featureFlags.enableMcp;
+    this.enableToolAgentDelegation =
+      config.enableToolAgentDelegation ?? runtime.featureFlags.enableToolAgentDelegation;
+    this.enableMainToolSurfaceReduction =
+      config.enableMainToolSurfaceReduction ??
+      runtime.featureFlags.enableMainToolSurfaceReduction;
     this.enableVoice = config.enableVoice ?? runtime.featureFlags.enableVoice;
     const browserRunAuth = resolveBrowserRunAuth(env);
     const cloudflareAccountId = browserRunAuth.accountId;
@@ -1186,6 +1338,7 @@ export class MainAgent extends BaseThinkWithVoice {
 
     this.hooks.beforeTurn.add(() => {
       this._turnStartMs = Date.now();
+      this._recoveryZeroPartialNoticeFiberRequestId = undefined;
       this._turnToolCount = 0;
       this._turnStepCount = 0;
       this._turnInputTokens = 0;
@@ -1222,6 +1375,21 @@ export class MainAgent extends BaseThinkWithVoice {
       this._turnToolSurfaceSchemaApproxAfter = 0;
       this._turnToolSurfaceWrappedCount = 0;
       this._turnToolSurfaceGatewayVisibleCount = 0;
+      this._turnToolSurfaceMode = "full";
+      this._turnMainToolCountBeforeReduction = undefined;
+      this._turnMainToolCountAfterReduction = undefined;
+      this._turnDelegatedToToolAgent = false;
+      this._turnToolAgentDelegationMeta = undefined;
+      this._turnToolAgentDelegationTerminal = false;
+      this._turnToolAgentDelegateOk = false;
+      this._turnToolAgentResultEmpty = false;
+      this._turnToolAgentOrchestrationAfterDelegate = false;
+      this._turnToolAgentDelegationFailed = false;
+      this._turnToolAgentDelegateFailureExactReply = "";
+      this._turnToolAgentDelegateSuccessExactReply = "";
+      this._turnToolAgentBootstrapFailed = false;
+      this._turnToolAgentBootstrapError = "";
+      this._turnDelegateGateStrictToolCall = false;
       this._turnFrozenGatewayActiveTools = null;
       this._turnCodemodeSurfaceDecision = null;
       this._turnCodemodeFailureSummaries = [];
@@ -1256,6 +1424,25 @@ export class MainAgent extends BaseThinkWithVoice {
       const metadataHeaders = this.extractGatewayMetadataHeaders(ctx);
       if (metadataHeaders.model) this._turnGatewayModel = metadataHeaders.model;
       if (metadataHeaders.provider) this._turnGatewayProvider = metadataHeaders.provider;
+
+      if (this._turnDelegateGateStrictToolCall) {
+        const toolCalls = ctx.toolCalls ?? [];
+        const preview = toolCalls
+          .slice(0, 8)
+          .map((c) => ({
+            toolName: (c as { toolName?: string }).toolName,
+            toolCallId: (c as { toolCallId?: string }).toolCallId,
+          }));
+        const rawMeta = ctx.providerMetadata as Record<string, unknown> | undefined;
+        const metaKeys =
+          rawMeta && typeof rawMeta === "object" ? Object.keys(rawMeta).sort().join(",") : "";
+        console.warn(
+          `[EdgeClaw][delegate-gate-inference] stepNumber=${ctx.stepNumber} ` +
+            `finishReason=${String(ctx.finishReason)} rawFinishReason=${ctx.rawFinishReason ?? "n/a"} ` +
+            `stepToolCallCount=${toolCalls.length} toolCallsPreview=${JSON.stringify(preview).slice(0, 900)} ` +
+            `providerMetadataKeys=${metaKeys || "none"}`
+        );
+      }
     });
 
     this.hooks.onChatResponse.add((ctx) => {
@@ -1287,6 +1474,24 @@ export class MainAgent extends BaseThinkWithVoice {
                 gatewayVisibleToolCount: this._turnToolSurfaceGatewayVisibleCount,
                 codemodeSanityStatus: this._turnCodemodeSanityTelemetryStatus,
                 fallbackToLegacy: this.computeTurnGatewayFallbackToLegacyTelemetry(),
+                mode: this._turnToolSurfaceMode,
+                ...(this._turnMainToolCountBeforeReduction !== undefined
+                  ? { mainToolCountBefore: this._turnMainToolCountBeforeReduction }
+                  : {}),
+                ...(this._turnMainToolCountAfterReduction !== undefined
+                  ? { mainToolCountAfter: this._turnMainToolCountAfterReduction }
+                  : {}),
+                ...(buildDelegationToolAgentToolSurfaceFields({
+                  delegatedToToolAgent: this._turnDelegatedToToolAgent,
+                  delegationMeta: this._turnToolAgentDelegationMeta,
+                  delegateOk: this._turnToolAgentDelegateOk,
+                  delegationFailed: this._turnToolAgentDelegationFailed,
+                  resultEmpty: this._turnToolAgentResultEmpty,
+                  delegationTerminal: this._turnToolAgentDelegationTerminal,
+                  orchestrationAfterDelegate: this._turnToolAgentOrchestrationAfterDelegate,
+                  bootstrapFailed: this._turnToolAgentBootstrapFailed,
+                  bootstrapError: this._turnToolAgentBootstrapError,
+                }) as Record<string, unknown>),
               },
             }
           : {}),
@@ -1538,7 +1743,10 @@ export class MainAgent extends BaseThinkWithVoice {
       dynamicRouteModel: fallback.modelId,
       gatewayBaseUrl: this.aiGatewayBaseUrl,
     };
-    const bindings = buildModelBindingsForAiGateway(this.env.AI_GATEWAY_TOKEN, { agent: "MainAgent" });
+    const bindings = buildModelBindingsForAiGateway(this.env.AI_GATEWAY_TOKEN, { agent: "MainAgent" }, {
+      requestId: this.requestId,
+      streamId: "",
+    });
     return resolveLanguageModel(selection, bindings);
   }
 
@@ -1548,12 +1756,16 @@ export class MainAgent extends BaseThinkWithVoice {
   async getModelForTurn(turn: AgentTurnContext = {}): Promise<LanguageModel> {
     const selection = await this.selectModelForTurn(turn);
     const obs = turn.aiGatewayObservability;
-    const bindings = buildModelBindingsForAiGateway(this.env.AI_GATEWAY_TOKEN, {
-      agent: obs?.agent ?? "MainAgent",
-      projectId: obs?.projectId,
-      taskId: obs?.taskId,
-      runId: obs?.runId,
-    });
+    const bindings = buildModelBindingsForAiGateway(
+      this.env.AI_GATEWAY_TOKEN,
+      {
+        agent: obs?.agent ?? "MainAgent",
+        projectId: obs?.projectId,
+        taskId: obs?.taskId,
+        runId: obs?.runId,
+      },
+      { requestId: this.requestId, streamId: "" }
+    );
     return resolveLanguageModel(selection, bindings);
   }
 
@@ -1658,7 +1870,10 @@ export class MainAgent extends BaseThinkWithVoice {
    */
   async resolveModel(context: Partial<ModelContext> = {}): Promise<LanguageModel> {
     const selection = await this.selectModel(context);
-    const bindings = buildModelBindingsForAiGateway(this.env.AI_GATEWAY_TOKEN, { agent: "MainAgent" });
+    const bindings = buildModelBindingsForAiGateway(this.env.AI_GATEWAY_TOKEN, { agent: "MainAgent" }, {
+      requestId: this.requestId,
+      streamId: "",
+    });
     return resolveLanguageModel(selection, bindings);
   }
 
@@ -1927,7 +2142,7 @@ export class MainAgent extends BaseThinkWithVoice {
         )
       : {};
 
-    // ── Workflow tools ──────────────────────────────────────────────────────
+    // ── Workflow tools + ToolAgent delegation ────────────────────────────────
     // Defined inline so they close over `agent` (this instance).
     // Both tools return pre-formatted strings so any model — including the
     // smaller routed model — simply relays the text rather than
@@ -2000,6 +2215,131 @@ export class MainAgent extends BaseThinkWithVoice {
           );
         },
       }),
+
+      ...(this.enableToolAgentDelegation
+        ? {
+            delegate_tool_task: tool({
+              description:
+                "Delegate a **tool-heavy** turn to the isolated ToolAgent (MCP, OpenAPI Codemode relay, external HTTP/API). " +
+                "When the user says to **delegate to ToolAgent** (or similar), you **must** call this tool — do not run `codemode` or MCP mirror tools on MainAgent for that request. " +
+                "Use for multi-step MCP/OpenAPI/Codemode/external API tasks that would otherwise require many tools or large schemas. " +
+                "Keep normal lightweight chat, single-step calls, browsing, workflows, schedules, git, and skills on this agent's direct tools.",
+              inputSchema: z.object({
+                userRequest: z
+                  .string()
+                  .min(1)
+                  .max(100_000)
+                  .describe("Concrete task for ToolAgent — APIs, identifiers, endpoints, desired outcome."),
+                taskKind: z
+                  .enum(["mcp_api", "external_api", "tool_orchestration", "unknown"])
+                  .describe(
+                    "Workload class for telemetry (unknown is treated like general tool orchestration)."
+                  ),
+                guidanceSkillKey: z
+                  .string()
+                  .max(512)
+                  .optional()
+                  .describe("Optional skills key echoed into the delegation payload as context."),
+                constraints: z
+                  .string()
+                  .max(32_000)
+                  .optional()
+                  .describe(
+                    "Optional limits (scopes, quotas, forbid writes, tenancy, explicit allow/deny list)."
+                  ),
+              }),
+              execute: async (args: {
+                userRequest: string;
+                taskKind: "mcp_api" | "external_api" | "tool_orchestration" | "unknown";
+                guidanceSkillKey?: string;
+                constraints?: string;
+              }): Promise<string> => {
+                try {
+                  agent._turnToolAgentDelegationTerminal = false;
+                  agent._turnToolAgentDelegateOk = false;
+                  agent._turnToolAgentResultEmpty = false;
+                  agent._turnToolAgentOrchestrationAfterDelegate = false;
+                  agent._turnToolAgentDelegationFailed = false;
+                  agent._turnToolAgentDelegateFailureExactReply = "";
+                  agent._turnToolAgentDelegateSuccessExactReply = "";
+                  agent._turnToolAgentBootstrapFailed = false;
+                  agent._turnToolAgentBootstrapError = "";
+                  agent._turnDelegatedToToolAgent = true;
+                  agent._turnToolAgentDelegationMeta = {
+                    agent: "ToolAgent",
+                    task: args.taskKind,
+                  };
+                  const cfAcct = agent.resolveCloudflareAccountIdForRouter();
+                  const body = formatDelegateToolAgentMessage({
+                    userRequest: args.userRequest,
+                    taskKind: args.taskKind,
+                    ...(args.guidanceSkillKey?.trim()
+                      ? { guidanceSkillKey: args.guidanceSkillKey }
+                      : {}),
+                    ...(args.constraints?.trim() ? { constraints: args.constraints } : {}),
+                    ...(cfAcct ? { cloudflareAccountId: cfAcct } : {}),
+                  });
+                  const result = await agent.delegateToToolAgent(body);
+                  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+                    taskKind: args.taskKind,
+                    userRequest: args.userRequest,
+                    rpc: {
+                      ok: result.ok,
+                      error: result.error,
+                      text: result.text,
+                    },
+                  });
+                  if (!result.ok) {
+                    agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+                    agent._turnToolAgentDelegationFailed = latches.delegationFailed;
+                    agent._turnToolAgentDelegateFailureExactReply = reply;
+                    agent._turnToolAgentDelegateSuccessExactReply = "";
+                    agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+                    agent._turnToolAgentBootstrapError = latches.bootstrapError;
+                    return reply;
+                  }
+                  if (latches.delegationFailed) {
+                    agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+                    agent._turnToolAgentDelegationFailed = true;
+                    agent._turnToolAgentDelegateFailureExactReply = reply;
+                    agent._turnToolAgentDelegateSuccessExactReply = "";
+                    agent._turnToolAgentDelegateOk = false;
+                    agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+                    agent._turnToolAgentBootstrapError = latches.bootstrapError;
+                    agent._turnToolAgentResultEmpty = false;
+                    return reply;
+                  }
+                  agent._turnToolAgentDelegateOk = latches.delegateOk;
+                  agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+                  agent._turnToolAgentDelegationFailed = false;
+                  agent._turnToolAgentDelegateFailureExactReply = "";
+                  agent._turnToolAgentDelegateSuccessExactReply = reply;
+                  agent._turnToolAgentResultEmpty = latches.resultEmpty;
+                  return reply;
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+                    taskKind: args.taskKind,
+                    userRequest: args.userRequest,
+                    rpc: { ok: false, error: msg, text: "" },
+                  });
+                  agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+                  agent._turnToolAgentDelegationFailed = latches.delegationFailed;
+                  agent._turnToolAgentDelegateFailureExactReply = reply;
+                  agent._turnToolAgentDelegateSuccessExactReply = "";
+                  agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+                  agent._turnToolAgentBootstrapError = latches.bootstrapError;
+                  agent._turnDelegatedToToolAgent = true;
+                  agent._turnToolAgentDelegationMeta = {
+                    agent: "ToolAgent",
+                    task: args.taskKind,
+                  };
+                  return reply;
+                }
+              },
+            }),
+          }
+        : {}),
     };
 
     const finalToolSet = {
@@ -2127,6 +2467,12 @@ export class MainAgent extends BaseThinkWithVoice {
     if (options.callbackHost) {
       sdkOptions.callbackHost = options.callbackHost;
     }
+    if (options.callbackPath) {
+      sdkOptions.callbackPath = options.callbackPath;
+    }
+    if (options.agentsPrefix) {
+      sdkOptions.agentsPrefix = options.agentsPrefix;
+    }
 
     return self.addMcpServer(name, url, sdkOptions);
   }
@@ -2160,6 +2506,7 @@ export class MainAgent extends BaseThinkWithVoice {
   // Data boundaries:
   //   PERSISTED (DO SQLite via configure/getConfig — key: mcpServers):
   //     id, name, url, transport, enabled, headers (server-side only), token (deprecated),
+  //     callbackHost, callbackPath, agentsPrefix, authUrl (OAuth handshake hints),
   //     createdAt, updatedAt
   //   RUNTIME-ONLY (from SDK getMcpServers() — rebuilt on every snapshot call):
   //     state, error, auth_url, instructions, capabilities, tools, prompts, resources
@@ -2203,6 +2550,21 @@ export class MainAgent extends BaseThinkWithVoice {
     await this.configure({ ...existing, mcpServers: servers });
   }
 
+  /** Merge OAuth/callback fields into one persisted row (preserves full config for ToolAgent sync). */
+  private async _mcpPatchPersistedServer(
+    name: string,
+    patch: Partial<
+      Pick<PersistedMcpServer, "authUrl" | "callbackHost" | "callbackPath" | "agentsPrefix">
+    >
+  ): Promise<void> {
+    const all = this._mcpReadConfig();
+    const idx = all.findIndex((s) => s.name === name);
+    if (idx === -1) return;
+    const now = new Date().toISOString();
+    all[idx] = { ...all[idx], ...patch, updatedAt: now };
+    await this._mcpWriteConfig(all);
+  }
+
   /**
    * Return the credential-free projection of the persisted config for use in
    * buildDiscoverySnapshot().  Strips both `headers` and `token` so neither
@@ -2211,7 +2573,7 @@ export class MainAgent extends BaseThinkWithVoice {
    */
   private _mcpConfigForSnapshot(): PersistedMcpServerSafe[] {
     return this._mcpReadConfig().map(
-      ({ headers: _h, token: _t, ...safe }) => safe
+      ({ headers: _h, token: _t, authUrl: _a, ...safe }) => safe
     );
   }
 
@@ -2250,6 +2612,10 @@ export class MainAgent extends BaseThinkWithVoice {
       headers?: Record<string, string>;
       /** @deprecated Use headers instead. */
       token?: string;
+      /** Persisted OAuth callback origin (Agents SDK `callbackHost`). */
+      callbackHost?: string;
+      callbackPath?: string;
+      agentsPrefix?: string;
     } = {}
   ): Promise<McpDiscoverySnapshot> {
     if (!this.enableMcp) {
@@ -2278,6 +2644,9 @@ export class MainAgent extends BaseThinkWithVoice {
     const result = await this.addServer(name, url, {
       transport,
       ...(effectiveHeaders ? { headers: effectiveHeaders } : {}),
+      ...(options.callbackHost?.trim() ? { callbackHost: options.callbackHost.trim() } : {}),
+      ...(options.callbackPath?.trim() ? { callbackPath: options.callbackPath.trim() } : {}),
+      ...(options.agentsPrefix?.trim() ? { agentsPrefix: options.agentsPrefix.trim() } : {}),
     });
 
     if (result.state === "authenticating" && result.authUrl) {
@@ -2298,8 +2667,15 @@ export class MainAgent extends BaseThinkWithVoice {
       updatedAt: now,
       ...(options.headers ? { headers: options.headers } :
           options.token  ? { token: options.token }      : {}),
+      ...(options.callbackHost?.trim() ? { callbackHost: options.callbackHost.trim() } : {}),
+      ...(options.callbackPath?.trim() ? { callbackPath: options.callbackPath.trim() } : {}),
+      ...(options.agentsPrefix?.trim() ? { agentsPrefix: options.agentsPrefix.trim() } : {}),
     };
     await this._mcpWriteConfig([...existing, persistEntry]);
+
+    if (typeof result.authUrl === "string" && result.authUrl.trim()) {
+      await this._mcpPatchPersistedServer(name, { authUrl: result.authUrl.trim() });
+    }
 
     return this.mcpGetState();
   }
@@ -2353,6 +2729,9 @@ export class MainAgent extends BaseThinkWithVoice {
     const result = await this.addServer(persisted.name, persisted.url, {
       transport: persisted.transport,
       ...(persistedHeaders ? { headers: persistedHeaders } : {}),
+      ...(persisted.callbackHost?.trim() ? { callbackHost: persisted.callbackHost.trim() } : {}),
+      ...(persisted.callbackPath?.trim() ? { callbackPath: persisted.callbackPath.trim() } : {}),
+      ...(persisted.agentsPrefix?.trim() ? { agentsPrefix: persisted.agentsPrefix.trim() } : {}),
     });
 
     if (result.state === "authenticating" && result.authUrl) {
@@ -2360,6 +2739,10 @@ export class MainAgent extends BaseThinkWithVoice {
         `[EdgeClaw][mcp] Server "${name}" requires OAuth re-authorization after reconnect. ` +
         `Returning authUrl to frontend.`
       );
+    }
+
+    if (typeof result.authUrl === "string" && result.authUrl.trim()) {
+      await this._mcpPatchPersistedServer(name, { authUrl: result.authUrl.trim() });
     }
 
     return this.mcpGetState();
@@ -2409,6 +2792,9 @@ export class MainAgent extends BaseThinkWithVoice {
         await this.addServer(updated.name, updated.url, {
           transport: updated.transport,
           ...(persistedHeaders ? { headers: persistedHeaders } : {}),
+          ...(updated.callbackHost?.trim() ? { callbackHost: updated.callbackHost.trim() } : {}),
+          ...(updated.callbackPath?.trim() ? { callbackPath: updated.callbackPath.trim() } : {}),
+          ...(updated.agentsPrefix?.trim() ? { agentsPrefix: updated.agentsPrefix.trim() } : {}),
         });
       } catch (err) {
         console.warn(`[EdgeClaw][mcp] SDK connect on re-enable failed for "${name}":`, err);
@@ -2426,43 +2812,16 @@ export class MainAgent extends BaseThinkWithVoice {
    */
   private async _mcpRestoreServers(): Promise<void> {
     if (!this.enableMcp) return;
-
-    const servers = this._mcpReadConfig();
-    if (servers.length === 0) return;
-
-    const enabledServers = servers.filter((s) => s.enabled);
-    const disabledCount = servers.length - enabledServers.length;
-
-    console.log(
-      `[EdgeClaw][mcp] Restoring ${enabledServers.length} enabled MCP server(s) after startup` +
-      (disabledCount > 0 ? ` (${disabledCount} disabled, skipped)` : "") + "."
+    const { restorePersistedMcpServersFromConfig } = await import("../lib/mcpRestoreFromPersisted");
+    console.log("[EdgeClaw][mcp] Restoring persisted MCP servers after startup.");
+    const { failures } = await restorePersistedMcpServersFromConfig(
+      this as unknown as import("../lib/mcpRestoreFromPersisted").ThinkMcpRestoreHost
     );
-
-    for (const server of enabledServers) {
-      try {
-        // Prefer stored `headers`; fall back to legacy `token` field for old persisted configs.
-        const persistedHeaders =
-          server.headers ??
-          (server.token ? { Authorization: `Bearer ${server.token}` } : undefined);
-
-        const result = await this.addServer(server.name, server.url, {
-          transport: server.transport,
-          ...(persistedHeaders ? { headers: persistedHeaders } : {}),
-        });
-        if (result.state === "authenticating") {
-          // OAuth token expired or not yet present; the SDK has no stored token.
-          // The server will appear as "authenticating" in the discovery snapshot.
-          // The frontend Authorize button lets the user re-authorize without removing the server.
-          console.log(
-            `[EdgeClaw][mcp] Server "${server.name}" needs OAuth re-authorization after restore. ` +
-            `User must authorize via the Settings panel.`
-          );
-        } else {
-          console.log(`[EdgeClaw][mcp] Restored server "${server.name}" (state=${result.state}).`);
-        }
-      } catch (err) {
-        console.error(`[EdgeClaw][mcp] Failed to restore server "${server.name}":`, err);
-      }
+    if (failures.length > 0) {
+      console.warn(
+        `[EdgeClaw][mcp] ${failures.length} MCP server(s) failed startup restore: ` +
+          failures.map((f) => `${f.name}: ${f.message}`).join("; ")
+      );
     }
   }
 
@@ -2493,68 +2852,8 @@ export class MainAgent extends BaseThinkWithVoice {
     // embed it in the HTML response to avoid XSS — we only post a boolean back to the
     // opener.  The frontend refreshes state and reads the server's lifecycle state directly.
     if (this.enableMcp) {
-      const sdkMcp = (this as unknown as {
-        mcp?: { configureOAuthCallback?: (opts: unknown) => void };
-      }).mcp;
-
-      if (typeof sdkMcp?.configureOAuthCallback === "function") {
-        // Inline type reflects MCPClientOAuthResult from the agents SDK.
-        type OAuthResult = { authSuccess: boolean; authError?: string };
-
-        sdkMcp.configureOAuthCallback({
-          customHandler: (result: OAuthResult) => {
-            const success = result.authSuccess === true;
-            if (!success) {
-              console.warn(
-                "[EdgeClaw][mcp] OAuth callback received failure result. " +
-                "Server will remain in authenticating state until user retries."
-              );
-            }
-            const html = success
-              ? [
-                  "<!DOCTYPE html>",
-                  "<html><head><meta charset=utf-8>",
-                  "<title>Authorization Complete</title>",
-                  "<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f8fafc}",
-                  ".card{text-align:center;padding:2rem;border-radius:12px;background:#fff;box-shadow:0 2px 16px rgba(0,0,0,.1)}",
-                  "h2{color:#16a34a;margin:0 0 .5rem}p{color:#64748b;margin:0}</style>",
-                  "</head><body><div class=card>",
-                  "<h2>&#10003; Authorized</h2>",
-                  "<p>This window will close automatically&hellip;</p>",
-                  "</div>",
-                ].join("")
-              : [
-                  "<!DOCTYPE html>",
-                  "<html><head><meta charset=utf-8>",
-                  "<title>Authorization Failed</title>",
-                  "<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#f8fafc}",
-                  ".card{text-align:center;padding:2rem;border-radius:12px;background:#fff;box-shadow:0 2px 16px rgba(0,0,0,.1)}",
-                  "h2{color:#dc2626;margin:0 0 .5rem}p{color:#64748b;margin:0}</style>",
-                  "</head><body><div class=card>",
-                  "<h2>&#10007; Authorization failed</h2>",
-                  "<p>Please close this window and try again from the Settings panel.</p>",
-                  "</div>",
-                ].join("");
-
-            return new Response(
-              html +
-                [
-                  "<script>",
-                  "(function(){",
-                  // Notify the opener with success/failure so it can show the right message.
-                  `try{if(window.opener&&!window.opener.closed){`,
-                  `window.opener.postMessage({type:'mcp-oauth-complete',success:${success}},window.location.origin);`,
-                  "}}catch(e){}",
-                  "setTimeout(function(){window.close();},800);",
-                  "})();",
-                  "</script></body></html>",
-                ].join(""),
-              { headers: { "content-type": "text/html; charset=utf-8" } }
-            );
-          },
-        });
-        console.log("[EdgeClaw][mcp] OAuth callback configured: popup-close mode (success+failure).");
-      }
+      const { configureEdgeClawMcpOAuthPopupClose } = await import("../lib/mcpOAuthPopupHandler");
+      configureEdgeClawMcpOAuthPopupClose(this);
     }
 
     await this._restoreAuraTtsFromStorage();
@@ -2959,6 +3258,54 @@ export class MainAgent extends BaseThinkWithVoice {
 
     const thinkMergedTools = (ctx.tools ?? {}) as ToolSet;
 
+    const wantsToolAgentDelegation = isExplicitDelegateToToolAgentUserMessage(userMessage);
+    const delegateToolEntry = thinkMergedTools["delegate_tool_task"];
+    const delegateToolPresent =
+      delegateToolEntry != null &&
+      (typeof delegateToolEntry === "object" || typeof delegateToolEntry === "function");
+
+    /** Chat MainAgent only — not ExecutionAgent / ResearchAgent subclasses. Bundles: fall back on constructor.name. */
+    const isPrimaryMainAgentForDelegationGate =
+      this instanceof MainAgent &&
+      (this.constructor === MainAgent || this.constructor?.name === "MainAgent");
+
+    if (wantsToolAgentDelegation && isPrimaryMainAgentForDelegationGate) {
+      const baseSystemRaw =
+        typeof baseConfig.system === "string"
+          ? baseConfig.system
+          : typeof ctx.system === "string"
+            ? ctx.system
+            : "";
+
+      if (this.enableToolAgentDelegation && delegateToolPresent) {
+        const delegationSupplement =
+          "[EdgeClaw delegation gate] The user instructed delegation to ToolAgent. Call **only** `delegate_tool_task` " +
+          "once: set taskKind=`mcp_api` for MCP/OpenAPI work (or matching workload), copy the substantive task details into userRequest; " +
+          "do **not** use `codemode`, `execute`, or raw `tool_*` MCP tools on MainAgent this turn.";
+        console.info(
+          `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=yes toolChoice=required activeTools=delegate_tool_task`
+        );
+        this._turnDelegateGateStrictToolCall = true;
+        return this.finalizeBeforeTurnGatewayAuditAndFreeze(thinkMergedTools, {
+          ...baseConfig,
+          system: baseSystemRaw ? `${baseSystemRaw}\n\n${delegationSupplement}` : delegationSupplement,
+          activeTools: ["delegate_tool_task"],
+          toolChoice: "required",
+          maxSteps: 1,
+        });
+      }
+
+      console.warn(
+        `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=yes skipped: enableToolAgentDelegation=${this.enableToolAgentDelegation} delegateToolPresent=${delegateToolPresent} ctor=${this.constructor?.name}`
+      );
+      const honestyBlock =
+        "\n\n[EdgeClaw] The user requested ToolAgent delegation, but **`delegate_tool_task` is unavailable this turn** " +
+        `(ENABLE_TOOL_AGENT_DELEGATION=${this.enableToolAgentDelegation}; tool registered=${delegateToolPresent}). ` +
+        "Explain that honestly. Do **not** claim ToolAgent is **offline**, **running**, **waiting**, or returning results — " +
+        "those states require a completed `delegate_tool_task` tool call.";
+      baseConfig.system = baseSystemRaw ? `${baseSystemRaw}${honestyBlock}` : honestyBlock.trimStart();
+    }
+
     const compressionPreSanity = resolveCodemodeToolSurfaceCompression({
       envGloballyAllows: this.codemodeToolSurfaceEnvAllowed,
       userCodemodeToolSurfaceEnabled,
@@ -3007,6 +3354,8 @@ export class MainAgent extends BaseThinkWithVoice {
       baseConfig.activeTools = source.filter((n) => !MAIN_CHAT_BROWSER_TOOL_NAMES.has(n));
     }
 
+    this.maybeNarrowMainAgentActiveToolsForDelegation(thinkMergedTools, baseConfig);
+
     this.finalizeTurnToolSurfaceTelemetry(thinkMergedTools, baseConfig);
 
     const augmentedForEmergency: ToolSet = {
@@ -3028,6 +3377,75 @@ export class MainAgent extends BaseThinkWithVoice {
    * default — keeping an explicit freeze here avoids accidental regressions across multi-step loops.
    */
   override async beforeStep(ctx: PrepareStepContext): Promise<StepConfig | void> {
+    if (
+      this._turnToolAgentDelegationFailed &&
+      this._turnToolAgentDelegateFailureExactReply.trim()
+    ) {
+      const parent = await super.beforeStep(ctx);
+      return mergeDelegationFailureTerminalStepConfig(
+        parent,
+        this._turnToolAgentDelegateFailureExactReply
+      ) as StepConfig;
+    }
+
+    if (
+      this._turnToolAgentDelegationTerminal &&
+      !this._turnToolAgentDelegationFailed &&
+      this._turnToolAgentDelegateSuccessExactReply.trim()
+    ) {
+      const parent = await super.beforeStep(ctx);
+      return mergeDelegationFailureTerminalStepConfig(
+        parent,
+        this._turnToolAgentDelegateSuccessExactReply.trim()
+      ) as StepConfig;
+    }
+
+    if (this._turnToolAgentDelegationTerminal) {
+      const parent = await super.beforeStep(ctx);
+      return mergeStepConfigFreezeToolsForDelegationTerminal(parent) as StepConfig;
+    }
+
+    /** AI SDK string `toolChoice: "required"` is expanded to `{ type: "required" }`; some /compat routers ignore it.
+     * Force `{ type: "tool", toolName: "delegate_tool_task" }` on step 0 so the provider must emit that tool call. */
+    if (this._turnDelegateGateStrictToolCall) {
+      const stepNumber =
+        ctx && typeof ctx === "object" && typeof (ctx as { stepNumber?: unknown }).stepNumber === "number"
+          ? (ctx as { stepNumber: number }).stepNumber
+          : 0;
+      if (stepNumber === 0) {
+        const parentEarly = await super.beforeStep(ctx);
+        const emergencyWide =
+          this._turnCodemodeRouterEmergency &&
+          Array.isArray(this._turnEmergencyWideActiveTools) &&
+          this._turnEmergencyWideActiveTools.length > 0;
+        const freezeEarly = emergencyWide
+          ? this._turnEmergencyWideActiveTools
+          : this._turnFrozenGatewayActiveTools;
+        const parentObjEarly = parentEarly && typeof parentEarly === "object" ? parentEarly : undefined;
+        const activeNamesEarly =
+          freezeEarly !== null && freezeEarly.length > 0 ? [...freezeEarly] : ["delegate_tool_task"];
+        if (freezeEarly === null) {
+          console.warn(
+            "[EdgeClaw][delegate-gate-prepareStep] frozen activeTools unexpectedly null on step 0 — forcing [delegate_tool_task]"
+          );
+        } else {
+          const widenDiagEarly = diagnosePrepareStepWidenAgainstFreeze(freezeEarly, parentObjEarly);
+          if (widenDiagEarly) {
+            console.warn(widenDiagEarly);
+          }
+        }
+        console.warn(
+          `[EdgeClaw][delegate-gate-prepareStep] stepNumber=0 coercing toolChoice={type:tool,toolName:delegate_tool_task} ` +
+            `activeTools=${JSON.stringify(activeNamesEarly)}`
+        );
+        return {
+          ...(parentObjEarly ?? {}),
+          activeTools: activeNamesEarly,
+          toolChoice: { type: "tool" as const, toolName: "delegate_tool_task" },
+        } as StepConfig;
+      }
+    }
+
     const parent = await super.beforeStep(ctx);
     const emergencyWide =
       this._turnCodemodeRouterEmergency &&
@@ -3068,6 +3486,44 @@ export class MainAgent extends BaseThinkWithVoice {
     }
   }
 
+  /**
+   * Optionally hides MCP/Codemode/`execute` from Gateway `activeTools` while keeping the merged registry.
+   * Requires ToolAgent delegation + reduction flags (MainAgent only).
+   */
+  private maybeNarrowMainAgentActiveToolsForDelegation(
+    thinkMergedTools: ToolSet,
+    baseConfig: TurnConfig
+  ): void {
+    if (this.constructor !== MainAgent) return;
+
+    if (!this.enableToolAgentDelegation || !this.enableMainToolSurfaceReduction) {
+      this._turnToolSurfaceMode = "full";
+      this._turnMainToolCountBeforeReduction = undefined;
+      this._turnMainToolCountAfterReduction = undefined;
+      return;
+    }
+
+    const augmentedTools: ToolSet = {
+      ...thinkMergedTools,
+      ...(baseConfig.tools ?? {}),
+    };
+    const augmentedKeys = Object.keys(augmentedTools);
+    const configured = baseConfig.activeTools;
+    const visibleKeys =
+      configured === undefined || configured === null
+        ? augmentedKeys
+        : simulateProviderVisibleToolKeys(augmentedKeys, configured);
+
+    const before = visibleKeys.length;
+    const reduced = applyMainAgentReducedActiveTools(visibleKeys);
+    const after = reduced.length;
+
+    this._turnToolSurfaceMode = "reduced";
+    this._turnMainToolCountBeforeReduction = before;
+    this._turnMainToolCountAfterReduction = after;
+    baseConfig.activeTools = reduced;
+  }
+
   /** Closest approximation to schemas included in outbound provider requests (`prepareToolsAndToolChoice`). */
   private logAiGatewayToolsAtModelBoundary(mergedTools: ToolSet, cfg: TurnConfig): void {
     const augmentedTools: ToolSet = {
@@ -3082,6 +3538,12 @@ export class MainAgent extends BaseThinkWithVoice {
         : simulateProviderVisibleToolKeys(augmentedKeys, configured);
     const sortedVisible = [...visibleKeys].sort();
     const approx = estimateActiveToolSurfaceTokens(augmentedTools, visibleKeys);
+    const toolChoiceLog =
+      cfg.toolChoice === undefined
+        ? null
+        : typeof cfg.toolChoice === "string"
+          ? cfg.toolChoice
+          : JSON.stringify(cfg.toolChoice);
 
     const decision = this._turnCodemodeSurfaceDecision;
     const fallbackToLegacy = this.computeTurnGatewayFallbackToLegacyTelemetry();
@@ -3093,12 +3555,27 @@ export class MainAgent extends BaseThinkWithVoice {
         fallbackToLegacy,
         gatewayUnrestrictedSchemas: configured === undefined || configured === null,
         gatewayVisibleToolCount: sortedVisible.length,
+        gatewayVisibleToolNames: sortedVisible,
+        toolChoice: toolChoiceLog,
+        maxSteps: cfg.maxSteps ?? null,
         approxSchemaTokens: approx,
         toolSurfacePlanReason: this._turnToolSurfaceReason || null,
         wrappedToolCount: this._turnToolSurfaceWrappedCount,
         perStepFrozenActiveTools: this._turnFrozenGatewayActiveTools !== null,
+        toolSurfaceMode: this._turnToolSurfaceMode,
+        mainToolCountBefore: this._turnMainToolCountBeforeReduction ?? null,
+        mainToolCountAfter: this._turnMainToolCountAfterReduction ?? null,
+        delegateGateStrictToolCall: this._turnDelegateGateStrictToolCall,
       })}`
     );
+
+    if (this._turnDelegateGateStrictToolCall) {
+      console.warn(
+        `[EdgeClaw][delegate-gate-streamText-input] toolChoice=${toolChoiceLog ?? "null"} ` +
+          `maxSteps=${cfg.maxSteps ?? "default"} activeTools=${JSON.stringify(sortedVisible)} ` +
+          `hint=coerced_toolChoice_logged_in_delegate-gate-prepareStep`
+      );
+    }
 
     if (this.obs.isEnabled("debug")) {
       if (configured === undefined || configured === null) {
@@ -3294,6 +3771,13 @@ export class MainAgent extends BaseThinkWithVoice {
       this.logBrowserToolDebug("before", ctx.toolName, { input: ctx.input });
     }
 
+    const delegateDecision = evaluateMainAgentDelegateBeforeToolCallDecision(
+      ctx.toolName,
+      this._turnToolAgentDelegationFailed,
+      this._turnToolAgentDelegationTerminal
+    );
+    if (delegateDecision) return delegateDecision;
+
     if (
       ctx.toolName === "browser_session" &&
       this.isBrowserSessionLaunchArgs(ctx.input) &&
@@ -3347,6 +3831,14 @@ export class MainAgent extends BaseThinkWithVoice {
    * `ToolCallResultContext` (`input`, `success`, `output`/`error`, `durationMs`).
    */
   async afterToolCall(ctx: ToolCallResultContext): Promise<void> {
+    if (
+      this._turnToolAgentDelegateOk &&
+      isMainAgentReductionHiddenToolName(ctx.toolName) &&
+      ctx.success
+    ) {
+      this._turnToolAgentOrchestrationAfterDelegate = true;
+    }
+
     this.maybeRecordCodemodeToolFailure(ctx);
     await this.maybeRecordCodemodeApiValidationStop(ctx);
     if (this.enableBrowserToolDebug && this.isBrowserTool(ctx.toolName)) {
@@ -3562,6 +4054,54 @@ export class MainAgent extends BaseThinkWithVoice {
     );
   }
 
+  /**
+   * When `delegate_tool_task` succeeds but `maxSteps: 1` prevents a follow-up inference step from
+   * running the deterministic text model, the ToolAgent reply lives only inside the tool-invocation
+   * part of the message — invisible in the chat UI. This method surfaces it as a final assistant
+   * text message, deduplicating when the model already emitted visible text (e.g. if maxSteps > 1
+   * and the deterministic step did run).
+   */
+  private async maybeInjectDelegateToolTaskSuccessAssistantMessage(
+    result: ChatResponseResult
+  ): Promise<void> {
+    const replyText = this._turnToolAgentDelegateSuccessExactReply.trim();
+    const resultTextLength = replyText.length;
+    if (!this._turnToolAgentDelegateOk || resultTextLength === 0) {
+      console.log(
+        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} ` +
+          `injectedVisibleAssistantMessage=no reason=${!this._turnToolAgentDelegateOk ? "delegate_not_ok" : "empty_reply"}`
+      );
+      return;
+    }
+    // Avoid injecting when the model already produced visible text from the terminal step.
+    const existingText = voiceExtractTextFromUiMessage(result.message).trim();
+    if (existingText.length > 0) {
+      console.log(
+        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} ` +
+          `injectedVisibleAssistantMessage=no reason=assistant_already_has_visible_text existingLength=${existingText.length}`
+      );
+      return;
+    }
+    try {
+      const think = this as unknown as {
+        session: { appendMessage: (m: UIMessage) => Promise<void> };
+        _broadcastMessages?: () => void;
+      };
+      const msg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        parts: [{ type: "text", text: replyText }],
+      };
+      await think.session.appendMessage(msg);
+      think._broadcastMessages?.();
+      console.log(
+        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} injectedVisibleAssistantMessage=yes reason=maxSteps1_no_terminal_step`
+      );
+    } catch (e) {
+      console.error("[EdgeClaw][delegate-finalize] Failed to append delegate success assistant message:", e);
+    }
+  }
+
   private async maybeInjectCodemodeFailureFallbackAssistantMessage(
     result: ChatResponseResult
   ): Promise<void> {
@@ -3732,6 +4272,37 @@ export class MainAgent extends BaseThinkWithVoice {
       );
     }
 
+    if (this._turnDelegateGateStrictToolCall) {
+      const msg = result.message as UIMessage | undefined;
+      let assistantToolLikeParts = false;
+      if (msg && Array.isArray(msg.parts)) {
+        for (const p of msg.parts) {
+          if (!p || typeof p !== "object") continue;
+          const t = (p as { type?: string }).type;
+          if (typeof t === "string" && (t === "tool-invocation" || t.startsWith("tool-"))) {
+            assistantToolLikeParts = true;
+            break;
+          }
+        }
+      }
+      console.warn(
+        `[EdgeClaw][delegate-gate-chat-response] status=${String(result.status)} ` +
+          `afterToolHooks_toolCallCount=${this._turnToolCount} ` +
+          `assistantMessageHasToolLikeParts=${assistantToolLikeParts}`
+      );
+      if (this._turnToolCount === 0 && result.status === "completed") {
+        console.error(
+          `[EdgeClaw][delegate-gate-violation] completed with zero tool calls despite delegate_tool_task gate`
+        );
+        void this.injectImmediateCodemodeAssistantMarkdown(
+          `[EdgeClaw] **Tool delegation did not run.** This turn required a \`delegate_tool_task\` call ` +
+            `(explicit ToolAgent delegation), but the model returned **no tool calls**. ` +
+            `That usually means a **MainAgent / AI Gateway** issue (\`tool_choice\` / provider / \`/compat\` semantics), not MCP or ToolAgent. ` +
+            `Retry or switch routing to a model that honors **forced tool calls**.`
+        );
+      }
+    }
+
     // Browser grounding post-check: warn if the model described a browser action
     // but never actually called a tool. This indicates a hallucinated response.
     if (this._turnBrowserIntentDetected && this._turnToolCount === 0) {
@@ -3811,6 +4382,7 @@ export class MainAgent extends BaseThinkWithVoice {
     );
 
     await this.maybeInjectCodemodeFailureFallbackAssistantMessage(result);
+    await this.maybeInjectDelegateToolTaskSuccessAssistantMessage(result);
     await this.maybeInjectCodemodeApiStopAssistantMessage(result);
     this.maybeEmitCodemodeApiStopEndOfTurnTelemetry();
 
@@ -4298,6 +4870,265 @@ export class MainAgent extends BaseThinkWithVoice {
   }
 
   /**
+   * Execute an MCP relay tool on **this** MainAgent DO where the live MCP SDK session exists.
+   * Used by ToolAgent {@link buildMcpLiveMirrorToolSet} during `delegate_tool_task` — avoids a second
+   * `addMcpServer` / OAuth bootstrap on the ToolAgent isolate.
+   *
+   * On success, payload is returned as **`resultWire`** (`JSON.stringify` of wire-safe data) rather than `result`:
+   * Workers Agents Rpc marshalling can still reject `{ ok:true, result:object }` when hidden graph edges look
+   * like Durable Object stubs even after `structuredClone` probes succeed in-place.
+   *
+   * **Never `throw` from this `@callable()`** — Rpc marshals rejection values too, and MCP/SDK `Error`s
+   * occasionally carry subgraphs Rpc reports as `"DurableObject"`. Failures always return **`{ ok:false,
+   * error }`** strings. Outbound results are **`JSON.parse(JSON.stringify({…}))` plain envelopes** only so
+   * the stub never tries to marshal prototype/getter-hosted handles on the Rpc response object graph.
+   *
+   * **Tail validation (e.g. `tool_WB0fsUJK_search`):** first **`[EdgeClaw][rpcExecuteDelegatedMcp] enter`**, then in `finally`
+   * **`[EdgeClaw][rpcExecuteDelegatedMcp] exit:<phase> toolName=<id>`**. Success → **`exit:return_ok_resultWire_plain`**.
+   * Interpret `mcpLiveMirrorTools:rpc_stub_threw` using the comment on `logRpcDelegatedMcpExit` above.
+   */
+  @callable()
+  async rpcExecuteDelegatedMcpTool(payload: {
+    toolName: string;
+    input: unknown;
+  }): Promise<{ ok: boolean; resultWire?: string; result?: unknown; error?: string }> {
+    let diagToolTag = "(unset)";
+    /** Updated throughout the callable body — surfaced as `exit:<diagPhase>` (no payloads). */
+    let diagPhase = "finally_not_reached_before_try";
+
+    logRpcDelegatedMcpEnter();
+
+    let toolNameResolved = "";
+
+    try {
+      diagPhase = "normalize_rpc_arg";
+      const payloadPlain =
+        payload !== undefined &&
+        payload !== null &&
+        typeof payload === "object" &&
+        !Array.isArray(payload)
+          ? (payload as { toolName?: unknown; input?: unknown })
+          : undefined;
+
+      const toolName =
+        payloadPlain !== undefined && typeof payloadPlain.toolName === "string"
+          ? payloadPlain.toolName.trim()
+          : "";
+
+      diagToolTag = toolName.length > 0 ? toolName : "(missing_tool)";
+      toolNameResolved = toolName;
+      diagPhase = "after_tool_identity";
+
+      const delegatedInput = payloadPlain !== undefined ? payloadPlain.input : undefined;
+      const dbg = isCodemodeWireDebugEnabled();
+
+      const payloadShape =
+        payloadPlain === undefined ? "non_object_payload" : "object_payload";
+      const inputTag =
+        delegatedInput === undefined
+          ? "undefined"
+          : delegatedInput === null
+            ? "null"
+            : Array.isArray(delegatedInput)
+              ? "array"
+              : typeof delegatedInput;
+      let recvInputCloneProbe: "ok" | "fail" | "skipped" = "skipped";
+      if (typeof structuredClone === "function") {
+        if (delegatedInput === undefined) {
+          recvInputCloneProbe = "skipped";
+        } else {
+          try {
+            structuredClone(delegatedInput);
+            recvInputCloneProbe = "ok";
+          } catch {
+            recvInputCloneProbe = "fail";
+          }
+        }
+      }
+      console.warn(
+        `[EdgeClaw][rpcExecuteDelegatedMcp] recv payloadShape=${payloadShape} toolName=${toolName.length > 0 ? toolName : "(missing_tool)"} ` +
+          `inputTag=${inputTag} recvArgStructuredCloneProbe=${recvInputCloneProbe}`
+      );
+
+      if (!toolName) {
+        diagPhase = "return_toolName_required";
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: "[EdgeClaw] rpcExecuteDelegatedMcpTool: toolName required",
+        });
+      }
+
+      diagPhase = "before_mcp_lookup";
+      const host = this as unknown as { mcp?: { getAITools?: () => ToolSet } };
+      const tools = host.mcp?.getAITools?.() ?? {};
+      const def = tools[toolName];
+      if (!def || typeof def !== "object") {
+        diagPhase = "return_tool_not_found";
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: `[EdgeClaw] Delegated MCP tool not found on MainAgent: ${toolName}`,
+        });
+      }
+      const exec = (def as { execute?: (inp: unknown) => unknown | Promise<unknown> }).execute;
+      if (typeof exec !== "function") {
+        diagPhase = "return_missing_execute_fn";
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: `[EdgeClaw] Tool ${toolName} has no execute()`,
+        });
+      }
+
+      let raw: unknown;
+      diagPhase = "mcp_execute_await_enter";
+      try {
+        raw = await exec(delegatedInput);
+        diagPhase = "mcp_execute_await_done";
+      } catch (execErr) {
+        diagPhase = "return_execute_catch";
+        if (dbg) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel: "rpcExecuteDelegatedMcpTool:execute_threw",
+            delegatedMcpToolName: toolName,
+            rawExecuteResolved: false,
+            errorBeforeNeutralize: codemodeWireRawErrorMessage(execErr),
+          });
+        }
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: edgeClawRpcDelegatedMcpError("execute_catch", execErr, toolName),
+        });
+      }
+
+      const rawCtor =
+        raw !== null && raw !== undefined && typeof raw === "object"
+          ? ((raw as object).constructor?.name ?? "Object")
+          : typeof raw;
+      if (dbg) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "rpcExecuteDelegatedMcpTool:execute_resolved",
+          delegatedMcpToolName: toolName,
+          rawExecuteResolved: true,
+          rawConstructorName: rawCtor,
+        });
+      }
+
+      let wireResult: unknown;
+      diagPhase = "wire_toDelegated_enter";
+      try {
+        wireResult = toDelegatedMcpRpcWireValue(raw);
+        diagPhase = "wire_toDelegated_done";
+      } catch (wireErr) {
+        diagPhase = "return_wire_toDelegated_catch";
+        if (dbg) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel: "rpcExecuteDelegatedMcpTool:toDelegatedMcpRpcWireValue_threw",
+            delegatedMcpToolName: toolName,
+            rawExecuteResolved: true,
+            rawConstructorName: rawCtor,
+            jsonStringifyRoundTripOk: false,
+            errorBeforeNeutralize: codemodeWireRawErrorMessage(wireErr),
+          });
+        }
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: edgeClawRpcDelegatedMcpError("wire_toDelegatedMcpRpcWireValue", wireErr, toolName),
+        });
+      }
+
+      diagPhase = "coerce_envelope_enter";
+      try {
+        wireResult = coerceDelegatedRpcOkEnvelopeResult(wireResult);
+        diagPhase = "coerce_envelope_done";
+      } catch (envelopeErr) {
+        diagPhase = "return_coerce_envelope_catch";
+        if (dbg) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel: "rpcExecuteDelegatedMcpTool:coerceDelegatedRpcOkEnvelopeResult_threw",
+            delegatedMcpToolName: toolName,
+            rawExecuteResolved: true,
+            structuredCloneOk: false,
+            jsonStringifyRoundTripOk: true,
+            errorBeforeNeutralize: codemodeWireRawErrorMessage(envelopeErr),
+          });
+        }
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: edgeClawRpcDelegatedMcpError("coerceDelegatedRpc_envelope", envelopeErr, toolName),
+        });
+      }
+
+      let encoded: string;
+      diagPhase = "JSON_stringify_wire_enter";
+      try {
+        encoded = JSON.stringify(wireResult);
+        diagPhase = "JSON_stringify_wire_done";
+      } catch (stringifyErr) {
+        diagPhase = "return_stringify_catch";
+        if (dbg) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel: "rpcExecuteDelegatedMcpTool:JSON.stringify_resultWire_threw",
+            delegatedMcpToolName: toolName,
+            rawExecuteResolved: true,
+            errorBeforeNeutralize: codemodeWireRawErrorMessage(stringifyErr),
+          });
+        }
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: edgeClawRpcDelegatedMcpError("JSON_stringify_resultWire", stringifyErr, toolName),
+        });
+      }
+
+      diagPhase = "verify_parse_encoded";
+      try {
+        JSON.parse(encoded);
+      } catch (parseErr) {
+        diagPhase = "return_parse_verify_catch";
+        if (dbg) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel: "rpcExecuteDelegatedMcpTool:JSON.parse_verify_resultWire_threw",
+            delegatedMcpToolName: toolName,
+            rawExecuteResolved: true,
+            errorBeforeNeutralize: codemodeWireRawErrorMessage(parseErr),
+          });
+        }
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: edgeClawRpcDelegatedMcpError("JSON_parse_verify_resultWire", parseErr, toolName),
+        });
+      }
+
+      if (dbg) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "rpcExecuteDelegatedMcpTool:return_resultWire",
+          delegatedMcpToolName: toolName,
+          rawExecuteResolved: true,
+          resultWireByteLength: encoded.length,
+        });
+      }
+
+      diagPhase = "return_ok_resultWire_plain";
+      return rpcDelegatedStubPlainEnvelope({ ok: true, resultWire: encoded });
+    } catch (e) {
+      diagPhase = "return_outer_catch";
+      const dbgFallback = isCodemodeWireDebugEnabled();
+      if (dbgFallback) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "rpcExecuteDelegatedMcpTool:outer_catch_before_safe_message",
+          delegatedMcpToolName: toolNameResolved.length > 0 ? toolNameResolved : "(unset)",
+          rawExecuteResolved: false,
+          errorBeforeNeutralize: codemodeWireRawErrorMessage(e),
+        });
+      }
+      return rpcDelegatedStubPlainEnvelope({
+        ok: false,
+        error: edgeClawRpcDelegatedMcpError("outer_catch", e, toolNameResolved || "(unknown)"),
+      });
+    } finally {
+      logRpcDelegatedMcpExit(diagToolTag, diagPhase);
+    }
+  }
+
+  /**
    * Delegate a turn to a named child agent via Think’s sub-agent RPC pattern.
    *
    * The child runs as an independent Durable Object (facet) with its own SQLite-backed
@@ -4374,7 +5205,7 @@ export class MainAgent extends BaseThinkWithVoice {
           const alt = stub.rpcCollectStatelessModelTurn;
           if (typeof alt !== "function") {
             throw new Error(
-              "delegateTo: statelessSubAgentModelTurn requires the child class to expose @callable rpcCollectStatelessModelTurn (CoderAgent/TesterAgent)."
+              "delegateTo: statelessSubAgentModelTurn requires the child class to expose @callable rpcCollectStatelessModelTurn (CoderAgent, TesterAgent, ToolAgent, …)."
             );
           }
           result = await alt.call(stub, safeMessage);
@@ -4576,6 +5407,147 @@ export class MainAgent extends BaseThinkWithVoice {
       childName,
       body,
       options
+    );
+  }
+
+  /**
+   * Delegate a server-side tool-heavy turn to {@link ToolAgent} (MCP / OpenAPI / Codemode / HTTP).
+   * Always uses in-process `subAgent(ToolAgent)` — not the subagent coordinator.
+   *
+   * Before `rpcCollectChatTurn`, mirrors the parent's persisted MCP server rows when {@link enableMcp}
+   * so the child Codemode relay exposes the same wrapped `tool_*` MCP surface as MainAgent.
+   */
+  async delegateToToolAgent(
+    message: string,
+    options: DelegationOptions = {}
+  ): Promise<SubAgentResult> {
+    const { ToolAgent } = await import("./subagents/ToolAgent");
+    const childName =
+      options.subAgentInstanceSuffix != null
+        ? `tool-agent-${this.requestId}-${options.subAgentInstanceSuffix}`
+        : `tool-agent-${this.requestId}`;
+
+    if (options.onEvent != null) {
+      throw new Error(
+        "delegateTo: options.onEvent is not supported across sub-agent RPC (use in-process chat only)."
+      );
+    }
+    if (options.tools != null && Object.keys(options.tools).length > 0) {
+      throw new Error(
+        "delegateTo: options.tools cannot be merged across sub-agent RPC; register tools on the child class."
+      );
+    }
+
+    const self = this as unknown as {
+      subAgent(
+        cls: new (ctx: DurableObjectState, env: never) => Think,
+        name: string
+      ): Promise<{
+        rpcCollectChatTurn(msg: string): Promise<SubAgentResult>;
+        rpcCollectStatelessModelTurn?(msg: string): Promise<SubAgentResult>;
+        rpcSyncMcpConfigFromMainAgent?(payload: {
+          servers: PersistedMcpServer[];
+          oauthCallbackHost?: string;
+          delegatedParentAgentName?: string;
+          mcpMirrorToolDescriptors?: Record<string, McpMirrorToolDescriptor>;
+        }): Promise<{ ok: boolean; error?: string }>;
+      }>;
+    };
+
+    const stub = await self.subAgent(
+      ToolAgent as unknown as new (ctx: DurableObjectState, env: never) => Think,
+      childName
+    );
+
+    const safeMessage = truncateMessageForSubagentRpcInbound(message);
+
+    const { resolveMcpOAuthCallbackHostForToolAgentDelegation } = await import(
+      "../lib/mcpOAuthCallbackHost"
+    );
+    const oauthCallbackHost = await resolveMcpOAuthCallbackHostForToolAgentDelegation(this.env);
+
+    return __DO_NOT_USE_WILL_BREAK__agentContext.run(
+      {
+        agent: this,
+        connection: undefined,
+        request: undefined,
+        email: undefined,
+      },
+      async () => {
+        if (this.enableMcp && typeof stub.rpcSyncMcpConfigFromMainAgent === "function") {
+          try {
+            const mergedServers = mergePersistedMcpServersWithDiscoverySnapshot(
+              this._mcpReadConfig(),
+              this.mcpGetState()
+            );
+            const { shouldReuseLiveMcpSdkServer, buildMcpMirrorToolDescriptors } = await import(
+              "../lib/mcpToolAgentLiveReuse"
+            );
+            const mcpAiTools =
+              (this as unknown as { mcp?: { getAITools?: () => ToolSet } }).mcp?.getAITools?.() ??
+              {};
+            const reuseRows = mergedServers.filter(shouldReuseLiveMcpSdkServer);
+            const mcpMirrorToolDescriptors = buildMcpMirrorToolDescriptors(mcpAiTools, reuseRows);
+
+            const syncResult = await stub.rpcSyncMcpConfigFromMainAgent({
+              servers: mergedServers,
+              oauthCallbackHost,
+              delegatedParentAgentName: this.name,
+              mcpMirrorToolDescriptors,
+            });
+            if (
+              syncResult.ok === false &&
+              typeof syncResult.error === "string" &&
+              syncResult.error.trim()
+            ) {
+              return {
+                text: "",
+                events: [],
+                ok: false,
+                error: syncResult.error.trim(),
+              };
+            }
+          } catch (err) {
+            console.error("[EdgeClaw][tool-agent] MCP sync from MainAgent failed:", err);
+            const msg = err instanceof Error ? err.message : String(err);
+            return {
+              text: "",
+              events: [],
+              ok: false,
+              error: msg,
+            };
+          }
+        }
+
+        const delegationTimeoutMs = resolveToolAgentDelegationTimeoutMs({
+          TOOL_AGENT_DELEGATION_TIMEOUT_MS:
+            this.env.Variables?.TOOL_AGENT_DELEGATION_TIMEOUT_MS?.trim() ||
+            this.env.TOOL_AGENT_DELEGATION_TIMEOUT_MS?.trim(),
+        });
+
+        let result: SubAgentResult;
+        if (options.statelessSubAgentModelTurn === true) {
+          const alt = stub.rpcCollectStatelessModelTurn;
+          if (typeof alt !== "function") {
+            throw new Error(
+              "delegateTo: statelessSubAgentModelTurn requires the child class to expose @callable rpcCollectStatelessModelTurn (CoderAgent, TesterAgent, ToolAgent, …)."
+            );
+          }
+          result = await raceToolAgentDelegationRpc(alt.call(stub, safeMessage), delegationTimeoutMs);
+        } else {
+          result = await raceToolAgentDelegationRpc(stub.rpcCollectChatTurn(safeMessage), delegationTimeoutMs);
+        }
+        if (
+          result.ok === false &&
+          typeof result.error === "string" &&
+          /^tool_agent_delegation_timeout_after_\d+_ms$/.test(result.error.trim())
+        ) {
+          console.warn(
+            `[EdgeClaw][tool-agent] delegateToToolAgent delegation_timeout_ms=${delegationTimeoutMs} mainRequestId=${this.requestId}`
+          );
+        }
+        return result;
+      }
     );
   }
 
@@ -5743,17 +6715,47 @@ export class MainAgent extends BaseThinkWithVoice {
    * turn started within the last 5 minutes; otherwise persist only.
    */
   async onChatRecovery(ctx: ChatRecoveryContext): Promise<ChatRecoveryOptions> {
-    const ageMs = Date.now() - ctx.createdAt;
-    const withinWindow = ageMs < 5 * 60 * 1_000;
+    // If delegate_tool_task already completed and its result was finalized as a
+    // visible assistant message, do not resume — the turn is done.
+    if (detectDelegateFinalizedInMessages(ctx.messages as { role?: string; parts?: unknown[] }[])) {
+      console.log(
+        `[EdgeClaw][recovery] skip_delegate_finalized alreadyInjectedVisibleAssistant=yes ` +
+          `requestId=${ctx.requestId} streamId=${ctx.streamId}`
+      );
+      return { continue: false, persist: true };
+    }
+
+    const d = computeMainAgentChatRecoveryDecision(ctx);
 
     console.log(
       `[EdgeClaw][recovery] streamId=${ctx.streamId} requestId=${ctx.requestId} ` +
-        `ageMs=${ageMs} continue=${withinWindow} partialLength=${ctx.partialText.length}`
+        `ageMs=${d.ageMs} continue=${d.continueInference} partialLength=${ctx.partialText.length} ` +
+        `partialParts=${Array.isArray(ctx.partialParts) ? ctx.partialParts.length : 0} ` +
+        `hasPartial=${d.hasPartial ? "yes" : "no"}`
     );
 
+    if (d.shouldNotifyInterruptedNoPartial) {
+      if (this._recoveryZeroPartialNoticeFiberRequestId !== ctx.requestId) {
+        this._recoveryZeroPartialNoticeFiberRequestId = ctx.requestId;
+        void this.injectImmediateCodemodeAssistantMarkdown(
+          "The assistant connection was interrupted before any reply arrived. Please send your message again."
+        );
+      }
+      this.obs.emit({
+        event: "turn.recovery.skipped_no_partial",
+        ts: new Date().toISOString(),
+        requestId: this.requestId,
+        agentName: this.constructor.name,
+        recoveryStreamId: ctx.streamId,
+        fiberRequestId: ctx.requestId,
+        ageMs: d.ageMs,
+        reason: "zero_partial_within_window",
+      });
+    }
+
     return {
-      persist: true,
-      continue: withinWindow,
+      persist: d.persist,
+      continue: d.continueInference,
     };
   }
 
@@ -7184,6 +8186,76 @@ export class MainAgent extends BaseThinkWithVoice {
    */
   async onRequest(request: Request): Promise<Response> {
     const { pathname } = new URL(request.url);
+
+    /** Programmatic turn — same contract as Worker `POST /webhook/trigger` (see `dispatchTurn`). */
+    if (pathname === "/webhook/trigger-turn" || pathname.endsWith("/webhook/trigger-turn")) {
+      if (request.method !== "POST") {
+        return new Response(JSON.stringify({ error: "Method not allowed" }), {
+          status: 405,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      let raw: unknown;
+      try {
+        raw = await request.json();
+      } catch {
+        return new Response(JSON.stringify({ error: "Invalid JSON body" }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        return new Response(JSON.stringify({ error: "Body must be a JSON object." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      const body = raw as Record<string, unknown>;
+      const prompt = body.prompt;
+      if (typeof prompt !== "string" || prompt.trim() === "") {
+        return new Response(JSON.stringify({ error: "\"prompt\" must be a non-empty string." }), {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      let metadata: Record<string, string> | undefined;
+      if (body.metadata !== undefined) {
+        if (
+          body.metadata === null ||
+          typeof body.metadata !== "object" ||
+          Array.isArray(body.metadata)
+        ) {
+          return new Response(JSON.stringify({ error: "\"metadata\" must be a string-keyed object." }), {
+            status: 400,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        metadata = {};
+        for (const [k, v] of Object.entries(body.metadata as Record<string, unknown>)) {
+          if (typeof v !== "string") {
+            return new Response(JSON.stringify({ error: `metadata[${k}] must be a string.` }), {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          metadata[k] = v;
+        }
+      }
+      const label = typeof body.label === "string" ? body.label : undefined;
+      try {
+        const result = await this.triggerTurn(prompt, metadata, label);
+        return new Response(JSON.stringify({ ok: true, ...result }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return new Response(JSON.stringify({ ok: false, error: msg }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+    }
 
     if (/\/voice(\/|$)/.test(pathname)) {
       return await handleVoiceRoute(request, this as unknown as VoiceRouteAdapter);

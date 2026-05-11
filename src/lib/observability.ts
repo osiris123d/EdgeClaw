@@ -175,10 +175,53 @@ export interface ToolSurfaceSummary {
   codemodeSanityStatus?: "skipped" | "ok" | "failed";
   /** True when widening was applied after sanity/router failure versus user preference. */
   fallbackToLegacy?: boolean;
+  /**
+   * MainAgent Gateway narrowing when MCP/Codemode-heavy names are hidden from `activeTools`
+   * (still executed via full merged registry + optional ToolAgent delegation).
+   */
+  mode?: "full" | "reduced";
+  /** Visible MainAgent tool names before optional MCP/Codemode reduction filter. */
+  mainToolCountBefore?: number;
+  /** Visible MainAgent tool names after reduction. */
+  mainToolCountAfter?: number;
+  /** True when this turn invoked `delegate_tool_task` → ToolAgent. */
+  delegatedToToolAgent?: boolean;
+  /** Gateway workload metadata used for ToolAgent RPC (`agent` + `task`). */
+  toolAgentGateway?: { agent: string; task?: string };
+  /**
+   * True when `delegate_tool_task` returned successfully with no assistant-visible text
+   * (empty after trim) — may still have had tool-only outcomes in the child.
+   */
+  toolAgentResultEmpty?: boolean;
+  /**
+   * True when a successful `delegate_tool_task` turn did not run MainAgent codemode / MCP / OpenAPI / `execute` afterwards.
+   */
+  toolAgentTerminal?: boolean;
+  /** True when ToolAgent MCP sync/restore failed before the child LLM turn. */
+  toolAgentBootstrapFailed?: boolean;
+  /** Short sanitized error detail when {@link toolAgentBootstrapFailed} is true. */
+  toolAgentBootstrapError?: string;
+}
+
+/** Emitted when Think chat recovery aborts continuation with no partial assistant output. */
+export interface TurnRecoverySkippedNoPartialEvent {
+  event: "turn.recovery.skipped_no_partial";
+  ts: string;
+  requestId?: string;
+  agentName: string;
+  recoveryStreamId?: string;
+  fiberRequestId?: string;
+  ageMs: number;
+  /** Stable machine-readable reason (no user prompts). */
+  reason: string;
 }
 
 /** Discriminated union of all emittable observability events. */
-export type ObsEvent = ModelSelectedEvent | ModelFallbackEvent | TurnSummaryEvent;
+export type ObsEvent =
+  | ModelSelectedEvent
+  | ModelFallbackEvent
+  | TurnSummaryEvent
+  | TurnRecoverySkippedNoPartialEvent;
 
 /** Sink function that receives every emitted event. */
 export type ObsSink = (event: ObsEvent) => void;
@@ -258,6 +301,7 @@ function eventMinLevel(eventName: ObsEvent["event"]): ObsLevel {
       return "error";
     case "model.selected":
     case "turn.summary":
+    case "turn.recovery.skipped_no_partial":
       return "info";
   }
 }

@@ -6,7 +6,10 @@
  *     protocol automatically — this covers interactive chat sessions.
  *  2. `/health`           — liveness probe.
  *  3. `/webhook/trigger`  — POST a versioned JSON payload to inject a user
- *                           message into a named agent instance.
+ *                           message into a named agent instance. The Worker forwards
+ *                           to the MainAgent DO via `fetch(POST /webhook/trigger-turn)` so
+ *                           Think `onStart`/Session is initialized before `saveMessages`
+ *                           (bare `stub.triggerTurn()` RPC can fail in local dev).
  *  4. `/webhook/scheduled`— POST for cron-triggered programmatic turns
  *                           (called from the `scheduled` export below).
  *  5. Static asset serving (if ASSETS binding is configured) with SPA fallback.
@@ -25,6 +28,10 @@
  *     (health, projects, tasks, run log). Does not proxy to MainAgent.
  *  9. 404 catch-all.
  *
+ * **Codemode wire diagnostics:** set `EDGECLAW_CODEMODE_WIRE_DEBUG=true` in Wrangler vars;
+ * `syncCodemodeWireDebugFromEnv` runs in Worker `fetch` / `scheduled` and in MainAgent / ToolAgent DO
+ * constructors so each isolate sees `[EdgeClaw][codemode-wire-delegated]` logs (no payloads).
+ *
  * Agent DO instances referenced from this Worker must be exported at the
  * module level so CF resolves `ctx.exports` correctly.
  */
@@ -36,6 +43,7 @@ import { ResearchAgent } from "./agents/subagents/ResearchAgent";
 import { ExecutionAgent } from "./agents/subagents/ExecutionAgent";
 import { CoderAgent } from "./agents/subagents/CoderAgent";
 import { TesterAgent } from "./agents/subagents/TesterAgent";
+import { ToolAgent } from "./agents/subagents/ToolAgent";
 import { EdgeclawResearchWorkflow }  from "./workflows/EdgeclawResearchWorkflow";
 import { EdgeclawPageIntelWorkflow } from "./workflows/EdgeclawPageIntelWorkflow";
 import { EdgeclawPreviewPromotionWorkflow } from "./workflows/EdgeclawPreviewPromotionWorkflow";
@@ -59,6 +67,7 @@ import { DebugMinimalDelegationChildThink } from "./debug/DebugMinimalDelegation
 import { DebugPingChildThink } from "./debug/DebugPingChildThink";
 import { SubagentCoordinatorThink } from "./agents/SubagentCoordinatorThink";
 import { EdgeclawBrowsingAgent } from "./browsing/EdgeclawBrowsingAgent";
+import { syncCodemodeWireDebugFromEnv } from "./tools/codemodeRouterHelpers";
 
 // ── Versioned webhook payload ────────────────────────────────────────────────
 
@@ -196,21 +205,16 @@ async function parseWebhookPayload(request: Request): Promise<WebhookPayload | R
 }
 
 /**
- * Resolve a MainAgent DO instance by name and call `triggerTurn`.
- * Returns a JSON Response in both success and error cases.
+ * Resolve a MainAgent DO instance by name and run one programmatic turn.
+ *
+ * Uses `stub.fetch(POST /webhook/trigger-turn)` — not bare `stub.triggerTurn()` RPC — so the Agent
+ * `fetch` path runs after Think `onStart()` has created `session` (Miniflare and some RPC paths
+ * could otherwise call `saveMessages` before `this.session` exists).
  */
-/** Minimal shape of a MainAgent DO stub needed by `dispatchTurn`. */
-interface MainAgentStub {
-  triggerTurn(
-    text: string,
-    metadata?: Record<string, string>
-  ): Promise<{ requestId: string; status: "completed" | "skipped" }>;
-}
-
 /** Minimal DO namespace accessor — avoids TS type-depth issues with `DurableObjectNamespace<T>` generics. */
 interface PlainDONamespace {
   idFromName(name: string): DurableObjectId;
-  get(id: DurableObjectId): MainAgentStub & { fetch(request: Request): Promise<Response> };
+  get(id: DurableObjectId): { fetch(request: Request): Promise<Response> };
 }
 
 /**
@@ -502,9 +506,41 @@ async function dispatchTurn(
   const ns = env.MAIN_AGENT as unknown as PlainDONamespace;
   const stub = ns.get(ns.idFromName(agentName));
 
-  const result = await stub.triggerTurn(payload.prompt, payload.metadata);
+  const internalUrl = "https://do/webhook/trigger-turn";
+  const doRes = await stub.fetch(
+    new Request(internalUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: payload.prompt,
+        metadata: payload.metadata,
+      }),
+    })
+  );
 
-  return json({ ok: true, agentName, ...result });
+  let parsed: unknown;
+  try {
+    parsed = await doRes.json();
+  } catch {
+    return json(
+      { ok: false, agentName, error: "MainAgent trigger-turn response was not JSON." },
+      doRes.ok ? 502 : doRes.status
+    );
+  }
+
+  if (!doRes.ok) {
+    const err =
+      parsed &&
+      typeof parsed === "object" &&
+      parsed !== null &&
+      "error" in parsed &&
+      typeof (parsed as { error?: unknown }).error === "string"
+        ? (parsed as { error: string }).error
+        : `MainAgent returned HTTP ${doRes.status}`;
+    return json({ ok: false, agentName, error: err, details: parsed }, doRes.status);
+  }
+
+  return json({ ok: true, agentName, ...(parsed as Record<string, unknown>) });
 }
 
 // ── Worker export ─────────────────────────────────────────────────────────────
@@ -518,6 +554,8 @@ export default {
    * match the DO routing fall through to the explicit path handlers below.
    */
   async fetch(request: Request, env: Env): Promise<Response> {
+    syncCodemodeWireDebugFromEnv(env);
+
     // 1. Let the Agents SDK route agent/WebSocket traffic first.
     const routed = await routeAgentRequest(request, env);
     if (routed) return routed;
@@ -709,6 +747,7 @@ export default {
    * ```
    */
   async scheduled(event: ScheduledEvent, env: Env): Promise<void> {
+    syncCodemodeWireDebugFromEnv(env);
     await dispatchTurn(env, {
       version: "1",
       prompt: "Scheduled turn triggered by cron.",
@@ -721,4 +760,4 @@ export default {
 // ── Durable Object exports ────────────────────────────────────────────────────
 // These must be module-level for Cloudflare to resolve `ctx.exports`.
 
-export { MainAgent, ResearchAgent, ExecutionAgent, CoderAgent, TesterAgent, ReproParentAgent, ReproChildAgent, ReproParentThink, ReproChildThink, DebugMinimalDelegationChildThink, DebugPingChildThink, SubagentCoordinatorThink, EdgeclawBrowsingAgent, EdgeclawResearchWorkflow, EdgeclawPageIntelWorkflow, EdgeclawPreviewPromotionWorkflow, EdgeclawProductionDeployWorkflow };
+export { MainAgent, ResearchAgent, ExecutionAgent, CoderAgent, TesterAgent, ToolAgent, ReproParentAgent, ReproChildAgent, ReproParentThink, ReproChildThink, DebugMinimalDelegationChildThink, DebugPingChildThink, SubagentCoordinatorThink, EdgeclawBrowsingAgent, EdgeclawResearchWorkflow, EdgeclawPageIntelWorkflow, EdgeclawPreviewPromotionWorkflow, EdgeclawProductionDeployWorkflow };

@@ -5,7 +5,7 @@
  */
 
 import { z } from "zod";
-import { BrowserActionSchema, type BrowserAction } from "../browserSession/browserActions";
+import { BrowserActionSchema, type BrowserAction } from "../browserSession/browserActions.js";
 
 const ActionsArraySchema = z.array(BrowserActionSchema);
 

@@ -23,6 +23,7 @@ test("classification keeps approval and HITL tools direct", () => {
     read: stubTool,
     schedule_task: stubTool,
     run_workflow: stubTool,
+    delegate_tool_task: stubTool,
     set_context: stubTool,
     write: stubTool,
   } satisfies ToolSet;
@@ -30,6 +31,7 @@ test("classification keeps approval and HITL tools direct", () => {
   const { direct, wrapped, excluded } = classifyMergedToolsForSurface(tools);
 
   assert.equal(excluded.has("codemode"), false);
+  assert.ok(direct.has("delegate_tool_task"));
   assert.ok(direct.has("browser_session"));
   assert.ok(direct.has("schedule_task"));
   assert.ok(direct.has("run_workflow"));

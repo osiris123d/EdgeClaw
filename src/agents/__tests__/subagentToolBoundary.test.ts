@@ -14,6 +14,7 @@ import {
   CODER_SUBAGENT_TOOL_DENY,
   SUBAGENT_ORCHESTRATION_BOUNDARY_KEYS,
   TESTER_SUBAGENT_TOOL_DENY,
+  TOOL_AGENT_SUBAGENT_TOOL_DENY,
   filterMainAgentToolSurface,
 } from "../subagents/subagentToolSurface";
 
@@ -24,6 +25,18 @@ test("CODER deny set covers orchestration contract keys", () => {
       `CODER_SUBAGENT_TOOL_DENY must include contract key "${k}"`
     );
   }
+});
+
+test("TOOL_AGENT deny set covers orchestration contract keys and browser tooling", () => {
+  for (const k of SUBAGENT_ORCHESTRATION_BOUNDARY_KEYS) {
+    assert.ok(
+      TOOL_AGENT_SUBAGENT_TOOL_DENY.has(k),
+      `TOOL_AGENT_SUBAGENT_TOOL_DENY must include contract key "${k}"`
+    );
+  }
+  assert.ok(TOOL_AGENT_SUBAGENT_TOOL_DENY.has("browser_search"));
+  assert.ok(TOOL_AGENT_SUBAGENT_TOOL_DENY.has("browser_execute"));
+  assert.ok(TOOL_AGENT_SUBAGENT_TOOL_DENY.has("list_tasks"));
 });
 
 test("TESTER deny set is superset of coder deny keys", () => {

@@ -4,6 +4,7 @@
  */
 
 import type { ToolSet } from "ai";
+import type { Env, Variables } from "../lib/env";
 
 /** Cloudflare device inventory GET paths — extend as products expose more list APIs. */
 export const DEFAULT_DEVICE_LIST_PATH_TEMPLATES = [
@@ -174,9 +175,593 @@ export function buildCloudflareRequestInnerCode(options: {
 }`;
 }
 
+/** When true, emit extra codemode/RPC wire diagnostics (no payloads / secrets). */
+export function isCodemodeWireDebugEnabled(): boolean {
+  try {
+    return (globalThis as { EDGECLAW_CODEMODE_WIRE_DEBUG?: unknown }).EDGECLAW_CODEMODE_WIRE_DEBUG === true;
+  } catch {
+    return false;
+  }
+}
+
+function readWorkerVarString(env: Env, key: keyof Variables): string | undefined {
+  const nested = env.Variables?.[key];
+  if (typeof nested === "string") return nested;
+  const top = env[key as keyof Env];
+  return typeof top === "string" ? top : undefined;
+}
+
+function isEnvExplicitTrue(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const n = value.trim().toLowerCase();
+  return n === "true" || n === "1" || n === "yes" || n === "on";
+}
+
 /**
- * Unwrap MCP tool results (content[].text) and parse JSON when possible.
+ * Reads `EDGECLAW_CODEMODE_WIRE_DEBUG` from Worker env into `globalThis` for
+ * {@link isCodemodeWireDebugEnabled}. Durable Objects run in separate isolates — call from
+ * MainAgent / ToolAgent constructors (and optionally Worker `fetch`) so diagnostics match env.
  */
+export function syncCodemodeWireDebugFromEnv(env: Env): void {
+  const raw =
+    readWorkerVarString(env, "EDGECLAW_CODEMODE_WIRE_DEBUG") ??
+    (typeof env.EDGECLAW_CODEMODE_WIRE_DEBUG === "string" ? env.EDGECLAW_CODEMODE_WIRE_DEBUG : undefined);
+  (globalThis as { EDGECLAW_CODEMODE_WIRE_DEBUG?: boolean }).EDGECLAW_CODEMODE_WIRE_DEBUG =
+    isEnvExplicitTrue(raw);
+}
+
+function logCodemodeWireReplacement(path: string, ctorName: string | undefined, v: object): void {
+  if (!isCodemodeWireDebugEnabled()) return;
+  let ownKeysCount = 0;
+  let prototypeConstructor: string | undefined;
+  try {
+    ownKeysCount = Object.keys(v).length;
+    prototypeConstructor = Object.getPrototypeOf(v)?.constructor?.name;
+  } catch {
+    /* ignore */
+  }
+  console.log("[EdgeClaw][codemode-wire]", {
+    kind: "replaced_non_wire_value",
+    path,
+    constructorName: ctorName ?? "(anonymous)",
+    ownKeysCount,
+    prototypeConstructor,
+  });
+}
+
+/** True for Workers host prototypes that must not cross Agents RPC / structuredClone. */
+export function codemodeWireBlockedConstructorName(name: string | undefined): boolean {
+  if (!name) return false;
+  return (
+    name.includes("DurableObject") ||
+    name === "Fetcher" ||
+    name === "RpcTarget" ||
+    name === "Headers" ||
+    name === "Request" ||
+    name === "Response" ||
+    name === "ReadableStream" ||
+    name === "WritableStream" ||
+    name === "TransformStream" ||
+    name === "CompressionStream" ||
+    name === "WebSocket" ||
+    name === "MessagePort" ||
+    name === "MessageChannel" ||
+    name === "Blob" ||
+    name === "FormData" ||
+    name === "URLSearchParams"
+  );
+}
+
+/**
+ * Non-neutralized error chain for DEBUG logs only (may mention DurableObject / RpcTarget).
+ */
+export function codemodeWireRawErrorMessage(err: unknown, depth = 0): string {
+  if (depth > 6) return "(cause depth limit)";
+  if (err instanceof Error) {
+    try {
+      const m = (err.message?.trim() || err.name || "Error").slice(0, 4000);
+      if ("cause" in err && err.cause !== undefined) {
+        return `${m} | cause: ${codemodeWireRawErrorMessage(err.cause, depth + 1)}`.slice(0, 8000);
+      }
+      return m;
+    } catch {
+      return "Error";
+    }
+  }
+  if (typeof err === "string") return err.slice(0, 8000);
+  try {
+    return String(err).slice(0, 8000);
+  } catch {
+    return "unknown_error";
+  }
+}
+
+/** DEBUG-only: delegated MCP / codemode mirror boundary (no payloads). */
+export function logCodemodeWireDelegatedBoundary(args: {
+  boundaryLabel: string;
+  helperMethod?: string;
+  delegatedMcpToolName?: string;
+  rawExecuteResolved?: boolean;
+  rawConstructorName?: string;
+  sanitizedConstructorName?: string;
+  jsonStringifyRoundTripOk?: boolean;
+  structuredCloneOk?: boolean;
+  convertedByCodemodeWireSafeErrorMessage?: boolean;
+  errorBeforeNeutralize?: string;
+  /** When MainAgent returns `resultWire` (JSON string) across Rpc */
+  resultWireByteLength?: number;
+}): void {
+  if (!isCodemodeWireDebugEnabled()) return;
+  console.log("[EdgeClaw][codemode-wire-delegated]", args);
+}
+
+/** True when a Workers Agents RPC / structured-clone error should be softened for user-facing surfaces. */
+export function codemodeWireIsInternalSerializationNoise(message: string): boolean {
+  // Host-wrapped diagnostics often quote the underlying Rpc clone error in parentheses.
+  // Substring checks would incorrectly collapse them to the generic neutral string.
+  if (message.trimStart().startsWith("[EdgeClaw]")) return false;
+  if (/serialize object of type\s*"[^"]+"/i.test(message)) return true;
+  if (/Could not serialize/i.test(message) && /does not support serialization/i.test(message)) return true;
+  if (/Could not serialize[\s\S]{0,160}DurableObject/i.test(message)) return true;
+  if (/structured\s+clone[\s\S]{0,240}(DurableObject|RpcTarget|Fetcher)/i.test(message)) return true;
+  return false;
+}
+
+/**
+ * Deep-clone a meta-tool return value into JSON-safe data so
+ * {@link EdgeClawToolDispatcher} can `JSON.stringify({ result })` without hitting
+ * `DurableObjectStub` / Fetcher / RpcTarget (Workers structured-clone rejects those).
+ */
+export function toCodemodeWireSerializable(value: unknown): unknown {
+  const seen = new WeakSet<object>();
+
+  function walk(v: unknown, path: string): unknown {
+    if (v === null || typeof v === "boolean" || typeof v === "number" || typeof v === "string") {
+      return v;
+    }
+    if (typeof v === "bigint") return v.toString();
+    if (typeof v === "undefined") return null;
+    if (typeof v === "function") return "[Function]";
+    if (typeof v !== "object") return String(v);
+
+    if (seen.has(v as object)) return "[Circular]";
+    seen.add(v as object);
+
+    if (v instanceof Error) {
+      let msg: string;
+      try {
+        const raw = String(v.message ?? "").trim();
+        msg = raw.length > 0 ? raw.slice(0, 8000) : typeof v.name === "string" && v.name ? v.name : "Error";
+        if (codemodeWireIsInternalSerializationNoise(msg)) {
+          msg = "Delegated tool returned a non-serializable value (internal).";
+        }
+      } catch {
+        msg = "Error";
+      }
+      const outErr: Record<string, unknown> = {
+        name: typeof v.name === "string" ? v.name : "Error",
+        message: msg,
+      };
+      if ("cause" in v && v.cause !== undefined) {
+        outErr.cause = walk(v.cause, `${path}.cause`);
+      }
+      return outErr;
+    }
+
+    const ctorName = (v as { constructor?: { name?: string } }).constructor?.name;
+    if (codemodeWireBlockedConstructorName(ctorName)) {
+      logCodemodeWireReplacement(path, ctorName, v as object);
+      return `[${ctorName}]`;
+    }
+
+    if (Array.isArray(v)) {
+      return v.map((x, i) => walk(x, `${path}[${i}]`));
+    }
+
+    const proto = Object.getPrototypeOf(v);
+    if (proto !== Object.prototype && proto !== null) {
+      if (v instanceof Date) return v.toISOString();
+      try {
+        return walk(JSON.parse(JSON.stringify(v)) as unknown, path);
+      } catch {
+        logCodemodeWireReplacement(path, ctorName, v as object);
+        return ctorName ? `[${ctorName}]` : "[Object]";
+      }
+    }
+
+    const out: Record<string, unknown> = {};
+    let keys: string[];
+    try {
+      keys = Object.keys(v as object);
+    } catch {
+      logCodemodeWireReplacement(path, ctorName, v as object);
+      return ctorName ? `[${ctorName}]` : "[Object]";
+    }
+    for (const k of keys) {
+      try {
+        let ev: unknown;
+        try {
+          ev = (v as Record<string, unknown>)[k];
+        } catch {
+          out[k] = "[Unreadable]";
+          continue;
+        }
+        out[k] = walk(ev, `${path}.${k}`);
+      } catch {
+        out[k] = "[Unserializable]";
+      }
+    }
+    return out;
+  }
+
+  try {
+    return walk(value, "$");
+  } catch {
+    return { _serializationWalkFailed: true };
+  }
+}
+
+/** JSON.parse(JSON.stringify(...)) after {@link toCodemodeWireSerializable} — Rpc/codemode-friendly values only. */
+export function ensureJsonSafeForCodemodeRelay(value: unknown): unknown {
+  return jsonParseStringifyRpcSafe(toCodemodeWireSerializable(value));
+}
+
+/** Always logs (Workers console) — no payloads; openapi mirror triage only. */
+export function logCodemodeOpenapiRelayFailure(args: {
+  boundaryLabel: string;
+  helper: string;
+  delegatedMcpTool?: string;
+  failureKind: string;
+  errorPreviewRaw: string;
+}): void {
+  const preview =
+    typeof args.errorPreviewRaw === "string"
+      ? args.errorPreviewRaw.slice(0, 500)
+      : "(no_preview)";
+  try {
+    console.warn(
+      "[EdgeClaw][openapi-relay-failure]",
+      JSON.stringify({
+        boundaryLabel: args.boundaryLabel,
+        helper: args.helper,
+        delegatedMcpTool: args.delegatedMcpTool,
+        failureKind: args.failureKind,
+        errorPreviewRaw: preview,
+      })
+    );
+  } catch {
+    /* ignore logging failures */
+  }
+}
+
+/** Return shape for openapi_search / openapi_describe_operation failures — always `[EdgeClaw]` in `error`. */
+export function edgeClawOpenapiRelayToolFailure(parts: {
+  helper: string;
+  boundarySuffix: string;
+  delegatedMcpTool?: string;
+  failureKind: string;
+  err: unknown;
+}): Record<string, unknown> {
+  const preview = codemodeWireRawErrorMessage(parts.err).slice(0, 480);
+  const error = `[EdgeClaw][${parts.boundarySuffix}] helper=${parts.helper} delegated=${parts.delegatedMcpTool ?? "?"} kind=${parts.failureKind}: ${preview}`;
+  logCodemodeOpenapiRelayFailure({
+    boundaryLabel: parts.boundarySuffix,
+    helper: parts.helper,
+    delegatedMcpTool: parts.delegatedMcpTool,
+    failureKind: parts.failureKind,
+    errorPreviewRaw: preview,
+  });
+  return {
+    ok: false,
+    error,
+    boundary: parts.boundarySuffix,
+    helper: parts.helper,
+    ...(parts.delegatedMcpTool !== undefined ? { delegatedMcpTool: parts.delegatedMcpTool } : {}),
+    failureKind: parts.failureKind,
+    errorPreviewRaw: preview,
+  };
+}
+
+/** MainAgent {@link rpcExecuteDelegatedMcpTool} — labeled so ToolAgent mirror never maps to generic neutral text. */
+export function edgeClawRpcDelegatedMcpError(label: string, err: unknown, toolName?: string): string {
+  const raw = codemodeWireRawErrorMessage(err).slice(0, 6000);
+  const tool = toolName ? ` tool=${toolName}` : "";
+  return `[EdgeClaw][rpcExecuteDelegatedMcpTool:${label}]${tool}: ${raw}`;
+}
+
+function jsonParseStringifyRpcSafe(sanitized: unknown): unknown {
+  const json = JSON.stringify(sanitized, (_key, v) => {
+    if (typeof v === "bigint") return v.toString();
+    if (v !== null && typeof v === "object") {
+      const ctor = (v as object).constructor?.name;
+      if (codemodeWireBlockedConstructorName(ctor)) {
+        logCodemodeWireReplacement("jsonRpcSafeReplacer", ctor, v as object);
+        return `[${ctor}]`;
+      }
+    }
+    return v;
+  });
+  return JSON.parse(json) as unknown;
+}
+
+function probeStructuredClone(value: unknown): boolean {
+  if (typeof structuredClone !== "function") return true;
+  try {
+    structuredClone(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Repeated JSON-freeze until `structuredClone(value)` succeeds — for raw payloads that cross
+ * Agents RPC hops where only the `{ ok, result }` envelope was hardened before (ToolAgent mirrors).
+ */
+export function coerceStandaloneStructuredClonePortable(value: unknown): unknown {
+  if (typeof structuredClone !== "function") return value;
+  let cur = value;
+  const maxRounds = 8;
+  for (let round = 0; round < maxRounds; round++) {
+    try {
+      structuredClone(cur);
+      return cur;
+    } catch {
+      try {
+        cur = jsonParseStringifyRpcSafe(toCodemodeWireSerializable(cur));
+      } catch {
+        throw new Error("[EdgeClaw] coerceStandaloneStructuredClonePortable: json_freeze_failed");
+      }
+    }
+  }
+  throw new Error(
+    `[EdgeClaw] coerceStandaloneStructuredClonePortable: clone_failed_after_${maxRounds}_rounds`
+  );
+}
+
+/**
+ * Agents RPC serializes `{ ok: true, result }` via structured clone. Rarely `result`
+ * survives {@link toDelegatedMcpRpcWireValue} standalone but still fails when nested in
+ * that envelope — then the RPC marshal throws noise that becomes the neutral delegation error.
+ * Applies {@link coerceStandaloneStructuredClonePortable} plus a full-envelope probe.
+ */
+export function coerceDelegatedRpcOkEnvelopeResult(result: unknown): unknown {
+  const portable = coerceStandaloneStructuredClonePortable(result);
+  if (typeof structuredClone !== "function") return portable;
+  try {
+    structuredClone({ ok: true as const, result: portable });
+    return portable;
+  } catch (eEnvelope) {
+    const again = coerceStandaloneStructuredClonePortable(portable);
+    try {
+      structuredClone({ ok: true as const, result: again });
+      return again;
+    } catch {
+      throw new Error(
+        `[EdgeClaw] coerceDelegatedRpcOkEnvelopeResult: envelope_clone_failed (${codemodeWireRawErrorMessage(eEnvelope)})`
+      );
+    }
+  }
+}
+
+/**
+ * Reduce delegated MCP tool output to plain JSON values safe for Workers **Agents RPC**
+ * (`structuredClone` on the wire). Host-side sanitization alone can still leave values
+ * that JSON would normalize but clone rejects; this applies {@link toCodemodeWireSerializable}
+ * then a guarded `JSON.parse(JSON.stringify(...))` (replacer catches host constructors
+ * encountered during stringify, e.g. getters / toJSON) so only JSON types cross the stub boundary.
+ */
+export function toDelegatedMcpRpcWireValue(value: unknown): unknown {
+  const dbg = isCodemodeWireDebugEnabled();
+  const sanitized = toCodemodeWireSerializable(value);
+  const rawCtor =
+    value !== null && value !== undefined && typeof value === "object"
+      ? ((value as object).constructor?.name ?? "Object")
+      : typeof value;
+  const sanitizedCtor =
+    sanitized !== null && sanitized !== undefined && typeof sanitized === "object"
+      ? ((sanitized as object).constructor?.name ?? "Object")
+      : typeof sanitized;
+
+  let jsonSafe: unknown;
+  try {
+    jsonSafe = jsonParseStringifyRpcSafe(sanitized);
+  } catch (e) {
+    if (dbg) {
+      logCodemodeWireDelegatedBoundary({
+        boundaryLabel: "toDelegatedMcpRpcWireValue:json_roundtrip_failed",
+        rawConstructorName: rawCtor,
+        sanitizedConstructorName: sanitizedCtor,
+        jsonStringifyRoundTripOk: false,
+        structuredCloneOk: undefined,
+        errorBeforeNeutralize: codemodeWireRawErrorMessage(e),
+      });
+    }
+    throw new Error(
+      `[EdgeClaw] delegated_mcp_rpc_wire_roundtrip_failed: ${codemodeWireSafeErrorMessage(e)}`
+    );
+  }
+
+  let cloneOk = probeStructuredClone(jsonSafe);
+  if (!cloneOk) {
+    if (dbg) {
+      logCodemodeWireDelegatedBoundary({
+        boundaryLabel: "toDelegatedMcpRpcWireValue:structured_clone_failed_before_emergency",
+        rawConstructorName: rawCtor,
+        sanitizedConstructorName:
+          jsonSafe !== null && jsonSafe !== undefined && typeof jsonSafe === "object"
+            ? ((jsonSafe as object).constructor?.name ?? "Object")
+            : typeof jsonSafe,
+        jsonStringifyRoundTripOk: true,
+        structuredCloneOk: false,
+      });
+    }
+    try {
+      const emergency = toCodemodeWireSerializable(jsonSafe);
+      jsonSafe = jsonParseStringifyRpcSafe(emergency);
+      cloneOk = probeStructuredClone(jsonSafe);
+    } catch (e2) {
+      if (dbg) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "toDelegatedMcpRpcWireValue:emergency_json_roundtrip_failed",
+          rawConstructorName: rawCtor,
+          jsonStringifyRoundTripOk: true,
+          structuredCloneOk: false,
+          errorBeforeNeutralize: codemodeWireRawErrorMessage(e2),
+        });
+      }
+      throw new Error(
+        `[EdgeClaw] delegated_mcp_rpc_wire_roundtrip_failed: ${codemodeWireSafeErrorMessage(e2)}`
+      );
+    }
+    if (!cloneOk) {
+      if (dbg) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "toDelegatedMcpRpcWireValue:structured_clone_failed_after_emergency",
+          rawConstructorName: rawCtor,
+          jsonStringifyRoundTripOk: true,
+          structuredCloneOk: false,
+        });
+      }
+      throw new Error(
+        "[EdgeClaw] delegated_mcp_rpc_wire_roundtrip_failed: structured_clone_unsafe_after_emergency_pass"
+      );
+    }
+    if (dbg) {
+      logCodemodeWireDelegatedBoundary({
+        boundaryLabel: "toDelegatedMcpRpcWireValue:recovered_after_emergency_pass",
+        rawConstructorName: rawCtor,
+        sanitizedConstructorName:
+          jsonSafe !== null && jsonSafe !== undefined && typeof jsonSafe === "object"
+            ? ((jsonSafe as object).constructor?.name ?? "Object")
+            : typeof jsonSafe,
+        jsonStringifyRoundTripOk: true,
+        structuredCloneOk: true,
+      });
+    }
+  }
+
+  return jsonSafe;
+}
+
+/** Optional fields merged into one JSON-safe `result` key for Codemode Rpc `JSON.parse(wire).result`. */
+export type CodemodeToolWireEnvelope = {
+  result?: unknown;
+  error?: unknown;
+  logs?: unknown;
+  meta?: unknown;
+  ok?: boolean;
+  tool?: string;
+  details?: unknown;
+};
+
+function stringifyCodemodeWireOuterResult(safe: unknown, previewSource: unknown): string {
+  try {
+    return JSON.stringify({ result: safe });
+  } catch (stringifyErr) {
+    const fallback = {
+      ok: false,
+      error: "codemode_result_json_stringify_failed",
+      stringifyDetail: codemodeWireSafeErrorMessage(stringifyErr),
+      receivedPreview: truncateCodemodeDebugJson(previewSource, 1200),
+    };
+    try {
+      return JSON.stringify({ result: toCodemodeWireSerializable(fallback) });
+    } catch {
+      return '{"result":{"ok":false,"error":"codemode_wire_fatal"}}';
+    }
+  }
+}
+
+/**
+ * Stringify a merged Codemode tool payload as `{ result: <sanitized plain JSON> }`.
+ * Never throws during stringify; sanitizes `error` / nested values.
+ */
+export function codemodeWireStringifyToolEnvelope(env: CodemodeToolWireEnvelope): string {
+  const merged: Record<string, unknown> = {};
+  for (const [k, val] of Object.entries(env)) {
+    if (val === undefined) continue;
+    if (k === "error") merged[k] = codemodeWireSafeErrorMessage(val);
+    else merged[k] = val;
+  }
+  let safe: unknown;
+  try {
+    safe = toCodemodeWireSerializable(merged);
+  } catch (e) {
+    safe = {
+      ok: false,
+      error: "codemode_serializable_walk_failed",
+      detail: codemodeWireSafeErrorMessage(e),
+    };
+  }
+  return stringifyCodemodeWireOuterResult(safe, merged);
+}
+
+/** Wire envelope `{ result }` for Rpc dispatcher — never throws; nested stringify failures become `{ ok:false }` payloads. */
+export function codemodeWireStringifyToolResult(result: unknown): string {
+  let safe: unknown;
+  try {
+    safe = toCodemodeWireSerializable(result);
+  } catch (e) {
+    safe = {
+      ok: false,
+      error: "codemode_serializable_walk_failed",
+      detail: codemodeWireSafeErrorMessage(e),
+    };
+  }
+  return stringifyCodemodeWireOuterResult(safe, result);
+}
+
+/** Safe short message from any thrown/captured value (never rethrows). */
+export function codemodeWireSafeErrorMessage(err: unknown, depth = 0, boundaryLabel?: string): string {
+  if (depth > 8) return "(cause depth limit)";
+  if (err instanceof Error) {
+    try {
+      let m = err.message?.trim();
+      let base = m && m.length > 0 ? m.slice(0, 8000) : err.name || "Error";
+      if (codemodeWireIsInternalSerializationNoise(base)) {
+        if (boundaryLabel && depth === 0 && isCodemodeWireDebugEnabled()) {
+          logCodemodeWireDelegatedBoundary({
+            boundaryLabel,
+            convertedByCodemodeWireSafeErrorMessage: true,
+            errorBeforeNeutralize: base.slice(0, 2000),
+          });
+        }
+        base = "Delegated tool returned a non-serializable value (internal).";
+      }
+      if ("cause" in err && err.cause !== undefined) {
+        const causeStr = codemodeWireSafeErrorMessage(err.cause, depth + 1);
+        return `${base} | cause: ${causeStr}`.slice(0, 8000);
+      }
+      return base;
+    } catch {
+      return "Error";
+    }
+  }
+  if (typeof err === "string") return err.slice(0, 8000);
+  try {
+    const s = JSON.stringify(toCodemodeWireSerializable(err));
+    return s.length > 8000 ? `${s.slice(0, 8000)}…` : s;
+  } catch {
+    try {
+      return String(err).slice(0, 8000);
+    } catch {
+      return "unknown_error";
+    }
+  }
+}
+
+/** Compact JSON preview for error diagnostics (never passes Rpc/DO stubs through). */
+export function truncateCodemodeDebugJson(parsed: unknown, maxChars = 2500): string {
+  try {
+    const s = JSON.stringify(toCodemodeWireSerializable(parsed));
+    return s.length > maxChars ? `${s.slice(0, maxChars)}…` : s;
+  } catch {
+    return "(unavailable)";
+  }
+}
+
+/** Unwrap MCP tool results (content[].text) and parse JSON when possible. */
 export function tryParseJsonFromMcpToolResult(raw: unknown): unknown {
   if (raw && typeof raw === "object" && "content" in raw) {
     const content = (raw as { content?: unknown }).content;

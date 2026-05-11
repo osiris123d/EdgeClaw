@@ -11,6 +11,11 @@
 import type { ExecuteResult, Executor, ResolvedProvider } from "@cloudflare/codemode";
 import { normalizeCode, sanitizeToolName } from "@cloudflare/codemode";
 import { RpcTarget } from "cloudflare:workers";
+import {
+  codemodeWireSafeErrorMessage,
+  codemodeWireStringifyToolResult,
+  toCodemodeWireSerializable,
+} from "./codemodeRouterHelpers";
 import { runCodemodeRouterInvocation } from "./codemodeRouterInvocation";
 
 type SandboxToolFn = (...args: unknown[]) => Promise<unknown>;
@@ -36,7 +41,8 @@ export class EdgeClawToolDispatcher extends RpcTarget {
   }
 
   /**
-   * Wire-format JSON `{ result } | { error }` (`codemode` Proxy parses this internally).
+   * Wire-format JSON `{ result }` (`codemode` Proxy parses this internally).
+   * Failures are encoded as JSON-safe `{ ok:false, ... }` inside `result` so Rpc serialization never throws.
    */
   async call(name: string, argsJson: string): Promise<string> {
     return this.#invokeWire(name, argsJson);
@@ -45,25 +51,37 @@ export class EdgeClawToolDispatcher extends RpcTarget {
   async #invokeDecoded(name: string, argsJson: string): Promise<unknown> {
     const wire = await this.#invokeWire(name, argsJson);
     const data = JSON.parse(wire) as { error?: unknown; result?: unknown };
-    if (data.error != null) {
-      throw new Error(String(data.error));
+    if (data.result !== undefined) {
+      return data.result;
     }
-    return data.result;
+    if (data.error != null) {
+      throw new Error(codemodeWireSafeErrorMessage(data.error));
+    }
+    throw new Error("codemode_empty_wire_response");
   }
 
   async #invokeWire(name: string, argsJson: string): Promise<string> {
     const fn = this.#fns[name];
-    if (!fn) return JSON.stringify({ error: `Tool "${name}" not found` });
+    if (!fn) {
+      return codemodeWireStringifyToolResult({
+        ok: false,
+        error: `Tool "${name}" not found`,
+      });
+    }
     try {
       if (this.#positionalArgs) {
         const args = argsJson ? JSON.parse(argsJson) : [];
         const result = await fn(...(Array.isArray(args) ? args : [args]));
-        return JSON.stringify({ result });
+        return codemodeWireStringifyToolResult(result);
       }
       const result = await fn(argsJson ? JSON.parse(argsJson) : {});
-      return JSON.stringify({ result });
+      return codemodeWireStringifyToolResult(result);
     } catch (err) {
-      return JSON.stringify({ error: err instanceof Error ? err.message : String(err) });
+      return codemodeWireStringifyToolResult({
+        ok: false,
+        error: codemodeWireSafeErrorMessage(err),
+        tool: name,
+      });
     }
   }
 }
@@ -147,9 +165,9 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
       `    console.error = (...a) => { __logs.push("[error] " + a.map(String).join(" ")); };`,
       ...providers.map((p) => {
         if (p.positionalArgs) {
-          return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (...args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args));\n        const data = JSON.parse(resJson);\n        if (data.error) throw new Error(data.error);\n        return data.result;\n      }\n    });`;
+          return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (...args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args));\n        const data = JSON.parse(resJson);\n        return data.result;\n      }\n    });`;
         }
-        return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args ?? {}));\n        const data = JSON.parse(resJson);\n        if (data.error) throw new Error(data.error);\n        return data.result;\n      }\n    });`;
+        return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args ?? {}));\n        const data = JSON.parse(resJson);\n        return data.result;\n      }\n    });`;
       }),
       "",
       `    try {`,
@@ -205,11 +223,23 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
       logs?: string[];
     };
 
+    const logsSanitized =
+      response.logs !== undefined ? toCodemodeWireSerializable(response.logs) : undefined;
+    const logsNormalized = Array.isArray(logsSanitized)
+      ? logsSanitized.map((l) => String(l))
+      : logsSanitized !== undefined
+        ? [String(logsSanitized)]
+        : undefined;
+
     if (response.error)
-      return { result: void 0, error: response.error, logs: response.logs };
+      return {
+        result: void 0,
+        error: codemodeWireSafeErrorMessage(response.error),
+        logs: logsNormalized,
+      };
     return {
-      result: response.result,
-      logs: response.logs,
+      result: toCodemodeWireSerializable(response.result),
+      logs: logsNormalized,
     };
   }
 }

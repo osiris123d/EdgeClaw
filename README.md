@@ -76,6 +76,7 @@ MainAgent Durable Object  (src/agents/MainAgent.ts)
 | **Worker cron** | Account-level cron invokes a full agent turn | `triggers.crons` in `wrangler.jsonc` + `scheduled` export | — | `POST /webhook/scheduled` (internal) |
 | **Workflows** | Saved definitions + durable runs (research, page intel, promotion pipelines, …) | `workflows` bindings in `wrangler.jsonc` | **Workflows** page | `/api/workflows/*` |
 | **MCP** | Connect remote MCP servers (e.g. Cloudflare Code Mode); tools flow into the agent | `ENABLE_MCP=true` + OAuth-capable browser for some servers | **Chat** (MCP panel) | `/api/mcp/*` |
+| **ToolAgent** (optional) | **`delegate_tool_task`** RPC to headless **ToolAgent** for MCP/Codemode/OpenAPI-heavy turns; optional MainAgent **`activeTools`** reduction | `ENABLE_TOOL_AGENT_DELEGATION` (+ optional `ENABLE_MAIN_TOOL_SURFACE_REDUCTION`) | — | (same Worker / DO RPC) |
 
 Sub-agents (coder / tester / coordinator) and the promotion story are documented in [Sub-agents](#sub-agents-coder-tester-coordinator) and [docs/coding-platform-architecture.md](docs/coding-platform-architecture.md).
 
@@ -687,6 +688,29 @@ Definitions can use trigger modes such as **manual**, **scheduled**, or **event*
 
 **UI** — Chat surfaces MCP connection status and discovery; use **`GET /api/mcp`** or the in-app MCP controls to add/remove/reconnect servers.
 
+### ToolAgent delegation (optional)
+
+EdgeClaw names this facet **ToolAgent** (headless tool orchestration over MCP, Codemode/OpenAPI relay, and HTTP/API work). That label matches Cloudflare AI Gateway **`cf-aig-metadata`** routing — prefer it over narrower names that imply “APIs only.”
+
+**Worker vars** (plain `vars` in `wrangler.jsonc` / `wrangler.local.jsonc`; **both default to off** unless set):
+
+| Var | Default | Purpose |
+|-----|---------|---------|
+| **`ENABLE_TOOL_AGENT_DELEGATION`** | `false` | Registers **`delegate_tool_task`** on **MainAgent** so the model can RPC to the **ToolAgent** Durable Object for heavy tool turns. |
+| **`ENABLE_MAIN_TOOL_SURFACE_REDUCTION`** | `false` | When **also** `ENABLE_TOOL_AGENT_DELEGATION=true`, narrows **MainAgent** Gateway **`activeTools`** so **`codemode`**, **`execute`**, **`mcp_*`**, and **`openapi_*`** are **hidden from the MainAgent LLM** (full merged registry still executes; use **`delegate_tool_task`** for that class of work). |
+
+**Default-safe behavior**
+
+- **`ENABLE_TOOL_AGENT_DELEGATION`** unset / `false` — no **`delegate_tool_task`** tool; chat behaves as before; MCP/OpenAPI tools remain on **MainAgent** when MCP/Codemode settings allow.
+- **`ENABLE_TOOL_AGENT_DELEGATION=true`** — delegation path available; monitor **`turn.summary`** / **`toolSurface`** (see `src/lib/observability.ts`) and AI Gateway logs for **`agent: ToolAgent`** and **`task`** (`mcp_api`, `external_api`, `tool_orchestration`).
+- **`ENABLE_MAIN_TOOL_SURFACE_REDUCTION`** only applies when **both** flags are true; keep it **`false`** until delegation is proven in your environment.
+
+**Canary rollout** — enable **`ENABLE_TOOL_AGENT_DELEGATION`** on staging (or a small prod cohort), validate MCP/OpenAPI workloads via **`delegate_tool_task`**, then optionally enable **`ENABLE_MAIN_TOOL_SURFACE_REDUCTION`** and confirm **`toolSurface.mode`** / counts and that schedules, workflows, and **`load_context`** / **`unload_context`** still behave as expected on **MainAgent**.
+
+**Gateway routing** — keep **`docs/ai-gateway-agent-router.json`** and **`docs/ai-gateway-agent-router-v2.json`** in sync when you change **`metadata.agent`** / **`metadata.task`** branching (CI asserts conditional routing parity).
+
+Operator checklist: [`docs/operator-live-readiness-checklist.md`](docs/operator-live-readiness-checklist.md) § ToolAgent.
+
 ---
 
 ## Agent Browsing (dedicated Playwright UI)
@@ -774,7 +798,7 @@ These are **not** secrets — they are deployed as **plain vars** or binding met
 | **R2 bucket names** (`changeme-edgeclaw-*` in the template) | **Yes** if `ENABLE_SKILLS` / promotion paths are on | Create buckets with **`wrangler r2 bucket create …`**, then set the same names under **`r2_buckets`** and **`PROMOTION_ARTIFACTS_BUCKET_NAME`** (must match the promotion bucket). |
 | **`ENABLE_SKILLS`** + **`SKILLS_BUCKET`** | Strongly recommended | If `ENABLE_SKILLS=true` but the R2 binding is missing, session skills are disabled (warning only). Set **`ENABLE_SKILLS=false`** if you intentionally skip skills. |
 | **`ENVIRONMENT`** | No | `development` / `staging` / `production` — telemetry and behavior hints. |
-| Other `vars` (`ENABLE_MCP`, `ENABLE_BROWSER_TOOLS`, …) | No | Feature toggles; see inline comments in **`wrangler.jsonc`** and the [Browser Run](#cloudflare-browser-run-auth-and-bindings) section. |
+| Other `vars` (`ENABLE_MCP`, `ENABLE_BROWSER_TOOLS`, `ENABLE_TOOL_AGENT_DELEGATION`, `ENABLE_MAIN_TOOL_SURFACE_REDUCTION`, …) | No | Feature toggles; see MCP § ToolAgent, inline comments in **`wrangler.jsonc`**, and [Browser Run](#cloudflare-browser-run-auth-and-bindings). |
 
 #### Secrets & API tokens (never commit — `.dev.vars` + `wrangler secret put`)
 
