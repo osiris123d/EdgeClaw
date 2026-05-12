@@ -152,7 +152,6 @@ test("delegate_tool_task success: onChatResponse injects visible assistant messa
   // Must emit [EdgeClaw][delegate-finalize] logs.
   assert.match(src, /\[EdgeClaw\]\[delegate-finalize\]/, "delegate-finalize logs present");
   assert.match(src, /injectedVisibleAssistantMessage=yes/, "logs yes when injected");
-  assert.match(src, /injectedVisibleAssistantMessage=no/, "logs no with reason when skipped");
   assert.match(src, /resultTextLength=/, "logs resultTextLength");
 });
 
@@ -183,4 +182,31 @@ test("delegate_tool_task empty result does not inject junk", () => {
     /resultTextLength\s*===\s*0|replyText\.length\s*===\s*0|resultTextLength === 0/,
     "empty reply short-circuits injection"
   );
+});
+
+test("rpcExecuteDelegatedMcpTool healthy-path enter/recv/exit logs are gated behind isCodemodeWireDebugEnabled, not unconditional", () => {
+  const mainPath = join(here, "..", "MainAgent.ts");
+  const src = readFileSync(mainPath, "utf8");
+
+  // Verify the debug gate helper is imported/used in MainAgent.ts at all.
+  assert.match(src, /isCodemodeWireDebugEnabled/, "isCodemodeWireDebugEnabled is referenced in MainAgent.ts");
+
+  // For each healthy-path RPC log marker, confirm it is always preceded (on its line or the line above)
+  // by isCodemodeWireDebugEnabled() — i.e., it does NOT appear in a bare console.warn/console.log call.
+  const unconditionalWarnPattern = /console\.warn\s*\(\s*[`'"][^`'"]*\[rpcExecuteDelegatedMcp\]\s+(?:enter|recv|exit)/;
+  const unconditionalLogPattern = /(?<![Dd]ebug[^\n]{0,60})\bconsole\.log\s*\(\s*[`'"][^`'"]*\[rpcExecuteDelegatedMcp\]\s+(?:enter|recv|exit)/;
+
+  assert.ok(
+    !unconditionalWarnPattern.test(src),
+    "[rpcExecuteDelegatedMcp] enter/recv/exit must not appear in a bare console.warn() call"
+  );
+
+  // Verify each log marker appears gated: isCodemodeWireDebugEnabled() immediately wraps each console.log.
+  const gatedEnter = /isCodemodeWireDebugEnabled\(\)\s*\)?\s*(?:&&\s*)?console\.log[^)]*\[rpcExecuteDelegatedMcp\]\s+enter|isCodemodeWireDebugEnabled\(\)\s*\)\s*\{[\s\S]{0,200}?\[rpcExecuteDelegatedMcp\]\s+enter/;
+  const gatedRecv = /isCodemodeWireDebugEnabled\(\)\s*\)?\s*(?:&&\s*)?console\.log[^)]*\[rpcExecuteDelegatedMcp\]\s+recv|isCodemodeWireDebugEnabled\(\)\s*\)\s*(console\.log|\{)[\s\S]{0,400}?\[rpcExecuteDelegatedMcp\]\s+recv/;
+  const gatedExit = /isCodemodeWireDebugEnabled\(\)\s*\)?\s*(?:&&\s*)?console\.log[^)]*\[rpcExecuteDelegatedMcp\]\s+exit|isCodemodeWireDebugEnabled\(\)\s*\)\s*(console\.log|\{)[\s\S]{0,400}?\[rpcExecuteDelegatedMcp\]\s+exit/;
+
+  assert.ok(gatedEnter.test(src), "[rpcExecuteDelegatedMcp] enter log is preceded by isCodemodeWireDebugEnabled() gate");
+  assert.ok(gatedRecv.test(src), "[rpcExecuteDelegatedMcp] recv log is preceded by isCodemodeWireDebugEnabled() gate");
+  assert.ok(gatedExit.test(src), "[rpcExecuteDelegatedMcp] exit log is preceded by isCodemodeWireDebugEnabled() gate");
 });

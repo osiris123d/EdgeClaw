@@ -346,6 +346,7 @@ import {
 import {
   evaluateMainAgentDelegateBeforeToolCallDecision,
   isExplicitDelegateToToolAgentUserMessage,
+  detectMcpToolApiDelegationIntent,
   mergeDelegationFailureTerminalStepConfig,
   mergeStepConfigFreezeToolsForDelegationTerminal,
 } from "./mainAgentDelegateToolGuards";
@@ -821,7 +822,7 @@ function clampVoiceFluxEager(n: number): number {
  */
 function logRpcDelegatedMcpEnter(): void {
   try {
-    console.warn("[EdgeClaw][rpcExecuteDelegatedMcp] enter");
+    if (isCodemodeWireDebugEnabled()) console.log("[EdgeClaw][rpcExecuteDelegatedMcp] enter");
   } catch {
     /* ignore console failures */
   }
@@ -830,7 +831,7 @@ function logRpcDelegatedMcpEnter(): void {
 /** Emits `[EdgeClaw][rpcExecuteDelegatedMcp] exit:<lastPhase> toolName=<id>` — never logs payloads or resultWire. */
 function logRpcDelegatedMcpExit(toolName: string, lastPhase: string): void {
   try {
-    console.warn(`[EdgeClaw][rpcExecuteDelegatedMcp] exit:${lastPhase} toolName=${toolName.slice(0, 120)}`);
+    if (isCodemodeWireDebugEnabled()) console.log(`[EdgeClaw][rpcExecuteDelegatedMcp] exit:${lastPhase} toolName=${toolName.slice(0, 120)}`);
   } catch {
     /* ignore console failures */
   }
@@ -3259,6 +3260,8 @@ export class MainAgent extends BaseThinkWithVoice {
     const thinkMergedTools = (ctx.tools ?? {}) as ToolSet;
 
     const wantsToolAgentDelegation = isExplicitDelegateToToolAgentUserMessage(userMessage);
+    const mcpToolIntent = detectMcpToolApiDelegationIntent(userMessage);
+    const wantsDelegation = wantsToolAgentDelegation || mcpToolIntent.matched;
     const delegateToolEntry = thinkMergedTools["delegate_tool_task"];
     const delegateToolPresent =
       delegateToolEntry != null &&
@@ -3269,7 +3272,7 @@ export class MainAgent extends BaseThinkWithVoice {
       this instanceof MainAgent &&
       (this.constructor === MainAgent || this.constructor?.name === "MainAgent");
 
-    if (wantsToolAgentDelegation && isPrimaryMainAgentForDelegationGate) {
+    if (wantsDelegation && isPrimaryMainAgentForDelegationGate) {
       const baseSystemRaw =
         typeof baseConfig.system === "string"
           ? baseConfig.system
@@ -3278,12 +3281,16 @@ export class MainAgent extends BaseThinkWithVoice {
             : "";
 
       if (this.enableToolAgentDelegation && delegateToolPresent) {
+        const taskKind = wantsToolAgentDelegation ? "mcp_api" : mcpToolIntent.taskKind;
         const delegationSupplement =
           "[EdgeClaw delegation gate] The user instructed delegation to ToolAgent. Call **only** `delegate_tool_task` " +
-          "once: set taskKind=`mcp_api` for MCP/OpenAPI work (or matching workload), copy the substantive task details into userRequest; " +
+          `once: set taskKind=\`${taskKind}\` for this workload, copy the substantive task details into userRequest; ` +
           "do **not** use `codemode`, `execute`, or raw `tool_*` MCP tools on MainAgent this turn.";
         console.info(
-          `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=yes toolChoice=required activeTools=delegate_tool_task`
+          `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=${wantsToolAgentDelegation ? "yes" : "no"} ` +
+            `mcpToolIntent=${mcpToolIntent.matched ? "yes" : "no"} ` +
+            `reason=${wantsToolAgentDelegation ? "explicit_delegate_phrase" : mcpToolIntent.reason} ` +
+            `taskKind=${taskKind} toolChoice=required activeTools=delegate_tool_task`
         );
         this._turnDelegateGateStrictToolCall = true;
         return this.finalizeBeforeTurnGatewayAuditAndFreeze(thinkMergedTools, {
@@ -3296,7 +3303,10 @@ export class MainAgent extends BaseThinkWithVoice {
       }
 
       console.warn(
-        `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=yes skipped: enableToolAgentDelegation=${this.enableToolAgentDelegation} delegateToolPresent=${delegateToolPresent} ctor=${this.constructor?.name}`
+        `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=${wantsToolAgentDelegation ? "yes" : "no"} ` +
+          `mcpToolIntent=${mcpToolIntent.matched ? "yes" : "no"} ` +
+          `reason=${wantsToolAgentDelegation ? "explicit_delegate_phrase" : mcpToolIntent.reason} ` +
+          `skipped: enableToolAgentDelegation=${this.enableToolAgentDelegation} delegateToolPresent=${delegateToolPresent} ctor=${this.constructor?.name}`
       );
       const honestyBlock =
         "\n\n[EdgeClaw] The user requested ToolAgent delegation, but **`delegate_tool_task` is unavailable this turn** " +
@@ -4067,19 +4077,11 @@ export class MainAgent extends BaseThinkWithVoice {
     const replyText = this._turnToolAgentDelegateSuccessExactReply.trim();
     const resultTextLength = replyText.length;
     if (!this._turnToolAgentDelegateOk || resultTextLength === 0) {
-      console.log(
-        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} ` +
-          `injectedVisibleAssistantMessage=no reason=${!this._turnToolAgentDelegateOk ? "delegate_not_ok" : "empty_reply"}`
-      );
       return;
     }
     // Avoid injecting when the model already produced visible text from the terminal step.
     const existingText = voiceExtractTextFromUiMessage(result.message).trim();
     if (existingText.length > 0) {
-      console.log(
-        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} ` +
-          `injectedVisibleAssistantMessage=no reason=assistant_already_has_visible_text existingLength=${existingText.length}`
-      );
       return;
     }
     try {
@@ -4945,7 +4947,7 @@ export class MainAgent extends BaseThinkWithVoice {
           }
         }
       }
-      console.warn(
+      if (isCodemodeWireDebugEnabled()) console.log(
         `[EdgeClaw][rpcExecuteDelegatedMcp] recv payloadShape=${payloadShape} toolName=${toolName.length > 0 ? toolName : "(missing_tool)"} ` +
           `inputTag=${inputTag} recvArgStructuredCloneProbe=${recvInputCloneProbe}`
       );

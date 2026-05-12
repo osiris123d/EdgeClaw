@@ -78,20 +78,16 @@ export function buildMcpLiveMirrorToolSet(options: {
       }
 
       const rpcPayload = { toolName, input: wiredInput };
-      let payloadJsonBytes = 0;
-      let fullPayloadStructuredCloneProbe: "ok" | "fail" | "skipped" = "skipped";
+      // Validate the payload is cloneable before handing it to the RPC stub.
+      // If this fails, the error is non-retryable (argument structure is invalid).
       try {
-        payloadJsonBytes = JSON.stringify(rpcPayload).length;
         if (typeof structuredClone === "function") {
           structuredClone(rpcPayload);
-          fullPayloadStructuredCloneProbe = "ok";
-        } else {
-          fullPayloadStructuredCloneProbe = "skipped";
         }
       } catch (preStubErr) {
         const msg = codemodeWireRawErrorMessage(preStubErr);
         console.warn(
-          `[EdgeClaw][mcpLiveMirrorTools] rpc_arg_precall_clone_failed tool=${toolName} fullPayloadStructuredCloneProbe=fail error=${msg.slice(0, 800)}`
+          `[EdgeClaw][mcpLiveMirrorTools] rpc_arg_precall_clone_failed tool=${toolName} error=${msg.slice(0, 800)}`
         );
         if (dbg) {
           logCodemodeWireDelegatedBoundary({
@@ -106,12 +102,12 @@ export function buildMcpLiveMirrorToolSet(options: {
         );
       }
 
-      console.warn(
-        `[EdgeClaw][mcpLiveMirrorTools] rpc_precall tool=${toolName} direction=toolAgent_to_mainAgent ` +
-          `payloadJsonBytes=${payloadJsonBytes} fullPayloadStructuredCloneProbe=${fullPayloadStructuredCloneProbe} ` +
-          `invocation_mode=direct_stub_method ` +
-          `expect_next_seq=MainAgent_rpcExecuteDelegatedMcp_enter_then_recv`
-      );
+      if (dbg) {
+        logCodemodeWireDelegatedBoundary({
+          boundaryLabel: "mcpLiveMirrorTools:rpc_precall",
+          delegatedMcpToolName: toolName,
+        });
+      }
 
       let res: { ok: boolean; resultWire?: string; result?: unknown; error?: string };
       try {

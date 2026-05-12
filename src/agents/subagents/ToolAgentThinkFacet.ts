@@ -17,7 +17,7 @@ import {
 } from "../../session/configureSession";
 import { createStandardRouter, type ModelContext } from "../../models";
 import { createRelayCodemodeToolSet } from "../../tools/codemodeMetaSurface";
-import { pickWrappedToolName, syncCodemodeWireDebugFromEnv } from "../../tools/codemodeRouterHelpers";
+import { pickWrappedToolName, syncCodemodeWireDebugFromEnv, isCodemodeWireDebugEnabled } from "../../tools/codemodeRouterHelpers";
 import {
   migratePersistedMcpServer,
   stripPersistedMcpServerOAuthRoutingFields,
@@ -234,14 +234,6 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
       parentAgentName: parent,
       descriptors: descriptors as Record<string, McpMirrorToolDescriptor>,
     });
-
-    const searchRelayName = pickWrappedToolName(this._liveMcpMirrorToolSet, "search");
-    const execRelayName = pickWrappedToolName(this._liveMcpMirrorToolSet, "execute");
-    console.log(
-      `[EdgeClaw][tool-agent] mcpMirrorRehydrate phase=storage_restore requestId=${this.requestId} ` +
-        `mirrorToolCount=${Object.keys(this._liveMcpMirrorToolSet).length} ` +
-        `hasSearchRelay=${Boolean(searchRelayName)} hasExecuteRelay=${Boolean(execRelayName)}`
-    );
   }
 
   protected override async onChatRecovery(ctx: ChatRecoveryContext): Promise<ChatRecoveryOptions> {
@@ -250,19 +242,6 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
     const tools = this.getTools();
     const searchRelayName = pickWrappedToolName(tools, "search");
     const execRelayName = pickWrappedToolName(tools, "execute");
-    const recoveryDataTag =
-      ctx.recoveryData === null || ctx.recoveryData === undefined
-        ? "null"
-        : typeof ctx.recoveryData;
-
-    console.log(
-      `[EdgeClaw][tool-agent] onChatRecovery phase=fiber_resume execution=fresh_vs_recovery=recovery ` +
-        `requestId=${this.requestId} rpcRequestId=${ctx.requestId} streamId=${ctx.streamId} ` +
-        `recoveryData=${recoveryDataTag} ` +
-        `hasSearchRelay=${Boolean(searchRelayName)} hasExecuteRelay=${Boolean(execRelayName)} ` +
-        `mirrorToolCount=${Object.keys(this._liveMcpMirrorToolSet).length} ` +
-        `liveSdkToolRowsApprox=${Object.keys(tools).filter((k) => /^tool_.*_(search|execute)$/.test(k)).length}`
-    );
 
     // Suppress recovery if cloudflare_request already succeeded — prevents redundant exploratory turns.
     const hasSuccessfulCloudflareRequest = detectSuccessfulCloudflareRequestInThread(
@@ -316,7 +295,6 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
 
     if (plan.reason === "codemode-surface-applied-default") {
       const relay = pickToolsByName(mergedTools, plan.wrappedNames);
-      const wrappedToolCount = Object.keys(relay).length;
       const searchRelayName = pickWrappedToolName(relay, "search");
       const execRelayName = pickWrappedToolName(relay, "execute");
       const executionPhase = ctx.continuation ? "recovery_continuation" : "fresh_turn";
@@ -329,9 +307,7 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
           `[EdgeClaw][tool-agent] codemodeSurface=partial_no_execute execution=${executionPhase} requestId=${this.requestId}`
         );
       } else {
-        console.log(
-          `[EdgeClaw][tool-agent] codemodeSurface=ready wrappedToolCount=${wrappedToolCount} execution=${executionPhase} requestId=${this.requestId}`
-        );
+        // healthy path — search + execute relay both present
       }
       if (ctx.continuation && (!searchRelayName || !execRelayName)) {
         throw new Error(
@@ -362,6 +338,7 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
    * Ensures Codemode relay `openapi_search` sees the same wrapped `tool_*_search` MCP tools as the parent.
    */
   private logToolAgentPostMcpSyncDiagnostics(mergedRows: PersistedMcpServer[]): void {
+    if (!isCodemodeWireDebugEnabled()) return;
     const rawUnknown = (this as unknown as { getMcpServers?: () => unknown }).getMcpServers?.();
     const raw = (rawUnknown ?? EMPTY_RAW_SDK_STATE) as RawSdkMcpState;
 
@@ -434,6 +411,7 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
       });
 
       for (const row of mergedRows) {
+        if (!isCodemodeWireDebugEnabled()) break;
         const reuse = shouldReuseLiveMcpSdkServer(row);
         const oauthRouting = mcpRestoreShouldIncludeOAuthRouting(row);
         console.log(
@@ -480,9 +458,6 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
         delegatedParentAgentName: parentName,
         mcpMirrorToolDescriptors: descriptors,
       });
-      console.log(
-        `[EdgeClaw][tool-agent] mcpMirrorSnapshotPersisted requestId=${this.requestId} parent=${JSON.stringify(parentName)} descriptorKeys=${Object.keys(descriptors).length}`
-      );
       return { ok: true };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -500,12 +475,8 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
       this._rpcDelegationGatewayObs = prepared.delegationGatewayObs;
       const inner = await executeRpcCollectChatTurn(this, prepared.inferenceMessageTrimmed);
       const result = clampSubAgentResultForRpc(inner);
-      const hasSuccessfulCloudflareRequest = detectSuccessfulCloudflareRequestInThread(
-        this.getMessages() as UIMessage[]
-      );
       console.log(
-        `[EdgeClaw][tool-agent] rpcCollectChatTurn terminal ok=${result.ok} ` +
-          `hasSuccessfulCloudflareRequest=${hasSuccessfulCloudflareRequest} requestId=${this.requestId}`
+        `[EdgeClaw][tool-agent] rpcCollectChatTurn terminal ok=${result.ok} requestId=${this.requestId}`
       );
       return result;
     } catch (err) {

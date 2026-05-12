@@ -80,6 +80,87 @@ export const MAIN_AGENT_DELEGATE_FAILURE_BEFORE_TOOL_CALL_REASON =
 export const MAIN_AGENT_DELEGATE_SUCCESS_TERMINAL_BEFORE_TOOL_CALL_REASON =
   "This turn already delegated tool orchestration to ToolAgent via delegate_tool_task — do not invoke codemode, execute, or raw MCP/OpenAPI tools again.";
 
+/**
+ * Result of {@link detectMcpToolApiDelegationIntent}.
+ */
+export interface McpToolApiDelegationIntent {
+  /** True when the message should force `delegate_tool_task` via the MCP/API tool-action path. */
+  matched: boolean;
+  /** Suggested `taskKind` for the `delegate_tool_task` call. */
+  taskKind: "mcp_api" | "tool_orchestration";
+  /** Short human-readable reason for the routing decision — included in telemetry logs. */
+  reason: string;
+}
+
+/**
+ * Detects when a user message implicitly requests ToolAgent delegation because it asks to use an
+ * MCP server/tool, external tool, OpenAPI tool, or connected API to perform a data-fetching /
+ * inspection action — without needing to say "delegate to ToolAgent" explicitly.
+ *
+ * Rules (all provider-agnostic):
+ * - Matches when a tool/MCP/API trigger phrase co-occurs with an action verb.
+ * - Does NOT match pure conceptual questions ("What is MCP?"), browser tasks, or general chat.
+ */
+export function detectMcpToolApiDelegationIntent(text: string): McpToolApiDelegationIntent {
+  const NO_MATCH: McpToolApiDelegationIntent = { matched: false, taskKind: "tool_orchestration", reason: "no_match" };
+  const t = typeof text === "string" ? text.trim() : "";
+  if (!t) return NO_MATCH;
+  const s = t.toLowerCase();
+
+  // ── Exclusion: pure conceptual / definitional questions ───────────────────
+  // "What is MCP?", "Explain what an API gateway is", "How does OpenAPI work?"
+  // Match if the sentence starts with (or is predominantly) a definition request.
+  const conceptualPrefixes = [
+    /^\s*what\s+(is|are|does|do)\b/,
+    /^\s*explain\b/,
+    /^\s*define\b/,
+    /^\s*how\s+does\b/,
+    /^\s*how\s+do\b/,
+    /^\s*can\s+you\s+explain\b/,
+    /^\s*tell\s+me\s+(what|about|how)\b/,
+    /^\s*describe\s+(what|how)\b/,
+  ];
+  if (conceptualPrefixes.some((re) => re.test(s))) return { ...NO_MATCH, reason: "conceptual_question" };
+
+  // ── Exclusion: browser / dashboard / UI tasks ─────────────────────────────
+  if (/\b(open|show|navigate|go\s+to)\b.*(dashboard|browser|tab|page|url|link)\b/.test(s)) {
+    return { ...NO_MATCH, reason: "browser_task" };
+  }
+
+  // ── Step 1: detect an MCP / tool-server trigger phrase ────────────────────
+  const mcpPhrases = [
+    /\buse\s+(the\s+)?mcp(\s+(server|tool|tools))?\b/,
+    /\bmcp\s+(server|tool|tools|connection|gateway)\b/,
+    /\bvia\s+mcp\b/,
+    /\bcall\s+(the\s+)?mcp\b/,
+    /\bconnected\s+tool(s)?\b/,
+    /\bexternal\s+tool(s)?\b/,
+    /\btool\s+server\b/,
+    /\buse\s+(the\s+)?tool\s+server\b/,
+  ];
+  const apiPhrases = [
+    /\bopenapi\b/,
+    /\bapi\s+tool(s)?\b/,
+    /\bcall\s+the\s+api\b/,
+    /\bquery\s+the\s+api\b/,
+    /\buse\s+the\s+api\b/,
+    /\bvia\s+(the\s+)?api\b/,
+    /\bthrough\s+(the\s+)?api\b/,
+  ];
+
+  const hasMcpTrigger = mcpPhrases.some((re) => re.test(s));
+  const hasApiTrigger = apiPhrases.some((re) => re.test(s));
+  if (!hasMcpTrigger && !hasApiTrigger) return NO_MATCH;
+
+  // ── Step 2: require an action verb ────────────────────────────────────────
+  const actionVerbs = /\b(list|get|fetch|retrieve|query|search|inspect|describe|summarize|call|check|look\s+up|find|show|enumerate|pull|read|count|filter)\b/;
+  if (!actionVerbs.test(s)) return { ...NO_MATCH, reason: "no_action_verb" };
+
+  const taskKind: "mcp_api" | "tool_orchestration" = hasMcpTrigger || hasApiTrigger ? "mcp_api" : "tool_orchestration";
+  const triggerLabel = hasMcpTrigger ? "mcp_trigger" : "api_trigger";
+  return { matched: true, taskKind, reason: triggerLabel };
+}
+
 export function evaluateMainAgentDelegateBeforeToolCallDecision(
   toolName: string,
   delegationFailed: boolean,
