@@ -470,3 +470,153 @@ export function validateOpenApiExecutionPlan(params: {
   if (issues.length > 0) return { ok: false, issues };
   return { ok: true };
 }
+
+export interface DiscoveredEndpointPlanCandidate {
+  method: string;
+  path: string;
+  /** Optional observed response fields from schema/discovery tools. */
+  responseFields?: string[];
+  /** Optional coarse payload estimate from prior observations (bytes). */
+  estimatedPayloadBytes?: number;
+}
+
+export interface BuildSmallestSufficientEndpointPlanArgs {
+  discovered: DiscoveredEndpointPlanCandidate[];
+  requestedFields: string[];
+  explicitMutationRequested: boolean;
+  explicitDetailInspectionRequested?: boolean;
+  paginationRequiresExpansion?: boolean;
+}
+
+export interface BuildSmallestSufficientEndpointPlanResult {
+  endpointCalls: Array<{ method: string; path: string }>;
+  warnings: string[];
+  rationale: string;
+}
+
+function isMutationMethod(method: string): boolean {
+  const m = method.trim().toUpperCase();
+  return m === "POST" || m === "PUT" || m === "PATCH" || m === "DELETE";
+}
+
+function isCollectionLikePath(path: string): boolean {
+  const p = path.trim();
+  if (!p) return false;
+  const placeholders = pathnameTemplateParams(p);
+  const nonHost = placeholders.filter((name) => !isHostInjectedPathOrAccountSlot(name));
+  return nonHost.length === 0;
+}
+
+function isDetailLikePath(path: string): boolean {
+  const placeholders = pathnameTemplateParams(path.trim());
+  const nonHost = placeholders.filter((name) => !isHostInjectedPathOrAccountSlot(name));
+  return nonHost.length > 0;
+}
+
+function normalizeFields(fields: string[] | undefined): Set<string> {
+  return new Set((fields ?? []).map((f) => f.trim().toLowerCase()).filter(Boolean));
+}
+
+function hasAllRequestedFields(candidate: DiscoveredEndpointPlanCandidate, requested: string[]): boolean {
+  if (requested.length === 0) return true;
+  const have = normalizeFields(candidate.responseFields);
+  if (have.size === 0) return false;
+  return requested.every((f) => have.has(f.trim().toLowerCase()));
+}
+
+function pickMinPayloadThenPath(
+  candidates: DiscoveredEndpointPlanCandidate[]
+): DiscoveredEndpointPlanCandidate | undefined {
+  const ranked = [...candidates].sort((a, b) => {
+    const pa = a.estimatedPayloadBytes ?? Number.MAX_SAFE_INTEGER;
+    const pb = b.estimatedPayloadBytes ?? Number.MAX_SAFE_INTEGER;
+    if (pa !== pb) return pa - pb;
+    return a.path.length - b.path.length;
+  });
+  return ranked[0];
+}
+
+/**
+ * Build a minimal endpoint execution plan from discovery hints.
+ *
+ * Endpoint discovery is advisory only: this planner chooses the smallest sufficient
+ * read plan for requested fields and blocks mutation routes unless explicitly requested.
+ */
+export function buildSmallestSufficientEndpointPlan(
+  args: BuildSmallestSufficientEndpointPlanArgs
+): BuildSmallestSufficientEndpointPlanResult {
+  const warnings: string[] = [];
+  const requested = [...new Set(args.requestedFields.map((f) => f.trim()).filter(Boolean))];
+
+  const mutationCandidates = args.discovered.filter((d) => isMutationMethod(d.method));
+  const readCandidates = args.discovered.filter((d) => !isMutationMethod(d.method));
+
+  if (mutationCandidates.length > 0 && !args.explicitMutationRequested) {
+    warnings.push("Mutation endpoints discovered but skipped because mutation was not explicitly requested.");
+  }
+
+  const collectionRead = readCandidates.filter((d) => isCollectionLikePath(d.path));
+  const detailRead = readCandidates.filter((d) => isDetailLikePath(d.path));
+
+  // Prefer collection/list when requested fields are already present.
+  const collectionWithRequestedFields = collectionRead.filter((d) => hasAllRequestedFields(d, requested));
+  const bestCollection = pickMinPayloadThenPath(
+    collectionWithRequestedFields.length > 0 ? collectionWithRequestedFields : collectionRead
+  );
+
+  const needsDetailExpansion =
+    Boolean(args.explicitDetailInspectionRequested) ||
+    Boolean(args.paginationRequiresExpansion) ||
+    (Boolean(bestCollection) && !hasAllRequestedFields(bestCollection!, requested));
+
+  const endpointCalls: Array<{ method: string; path: string }> = [];
+
+  if (bestCollection) {
+    endpointCalls.push({ method: bestCollection.method.trim().toUpperCase(), path: bestCollection.path });
+  }
+
+  if (needsDetailExpansion) {
+    const bestDetail = pickMinPayloadThenPath(detailRead);
+    if (bestDetail) {
+      endpointCalls.push({ method: bestDetail.method.trim().toUpperCase(), path: bestDetail.path });
+    } else if (!args.explicitMutationRequested && mutationCandidates.length > 0) {
+      warnings.push("Detail expansion needed but only mutation endpoints are available and were skipped.");
+    }
+  }
+
+  // Explicit mutation request: allow minimal mutation call only when asked.
+  if (args.explicitMutationRequested && mutationCandidates.length > 0) {
+    const bestMutation = pickMinPayloadThenPath(mutationCandidates);
+    if (bestMutation) {
+      endpointCalls.push({
+        method: bestMutation.method.trim().toUpperCase(),
+        path: bestMutation.path,
+      });
+    }
+  }
+
+  if (endpointCalls.length === 0) {
+    return {
+      endpointCalls: [],
+      warnings: [...warnings, "No executable endpoints selected from discovery hints."],
+      rationale:
+        "Discovery yielded no suitable minimal read plan; do not treat discovered endpoints as mandatory execution steps.",
+    };
+  }
+
+  if (!needsDetailExpansion && bestCollection) {
+    return {
+      endpointCalls,
+      warnings,
+      rationale:
+        "Selected only the collection/list endpoint because it already satisfies requested fields with the smallest payload.",
+    };
+  }
+
+  return {
+    endpointCalls,
+    warnings,
+    rationale:
+      "Selected minimal sufficient plan: collection/list first, detail only when required by missing fields, pagination expansion, or explicit detail inspection.",
+  };
+}

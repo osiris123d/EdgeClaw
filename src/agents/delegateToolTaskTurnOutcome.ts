@@ -4,7 +4,9 @@
  */
 
 import { TOOL_AGENT_MCP_RESTORE_FAILED_PREFIX } from "../lib/mcpRestoreFromPersisted";
-import type { SubAgentResult } from "./delegation";
+import type { SubAgentResult, ToolAgentResultEnvelope } from "./delegation";
+import { formatToolAgentFailureAssistantMessage } from "./toolAgentResultEnvelope";
+import { formatCompactMatchedResultText } from "./toolAgentSuccessAwareFinalization";
 
 /** Default cap for MainAgent → ToolAgent `rpcCollectChatTurn` await (`delegate_tool_task`). */
 export const TOOL_AGENT_DELEGATION_TIMEOUT_MS_DEFAULT = 600_000;
@@ -57,6 +59,7 @@ export interface DelegateToolTaskRpcShape {
   ok: boolean;
   error?: string;
   text: string;
+  toolAgentResult?: ToolAgentResultEnvelope;
 }
 
 export interface DelegateToolTaskTurnLatches {
@@ -157,12 +160,59 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
 }): { latches: DelegateToolTaskTurnLatches; reply: string } {
   const { taskKind, rpc } = args;
   const userRequest = args.userRequest;
+
+  if (rpc.toolAgentResult && rpc.toolAgentResult.ok === false) {
+    const stop = delegateToolTaskFailureShouldHardStopOrchestration(taskKind);
+    const f = rpc.toolAgentResult.failure;
+    const bootstrap =
+      f?.type === "missing_tool_input" &&
+      typeof f.evidence === "string" &&
+      isLikelyToolAgentMcpBootstrapFailureMessage(f.evidence);
+    return {
+      latches: {
+        delegationTerminal: stop,
+        delegationFailed: stop,
+        delegateOk: false,
+        bootstrapFailed: bootstrap,
+        bootstrapError:
+          bootstrap && f?.evidence ? sanitizeToolAgentBootstrapTelemetryError(f.evidence) : "",
+        resultEmpty: false,
+      },
+      reply: formatToolAgentFailureAssistantMessage(rpc.toolAgentResult),
+    };
+  }
+
   if (rpc.ok) {
     const trimmed = rpc.text.trim();
+    let visibleReply = trimmed;
+
+    // When the ToolAgent envelope carries structured matched data, always prefer
+    // the formatted markdown table over raw rpc.text (which may contain synthesized
+    // tool-invocation JSON from codemode calls).  This ensures the injected
+    // assistant message shows a human-readable table, not a raw JSON blob.
     if (
-      trimmed.length > 0 &&
+      rpc.toolAgentResult?.ok === true &&
+      typeof rpc.toolAgentResult.matchedCount === "number" &&
+      rpc.toolAgentResult.matchedCount > 0 &&
+      Array.isArray(rpc.toolAgentResult.matched)
+    ) {
+      const synthesized = formatCompactMatchedResultText({
+        scannedCount:
+          typeof rpc.toolAgentResult.scannedCount === "number"
+            ? rpc.toolAgentResult.scannedCount
+            : rpc.toolAgentResult.matched.length,
+        matchedCount: rpc.toolAgentResult.matchedCount,
+        matched: rpc.toolAgentResult.matched,
+      }).trim();
+      if (synthesized.length > 0) {
+        visibleReply = synthesized;
+      }
+    }
+
+    if (
+      visibleReply.length > 0 &&
       !userAskedForLiteralToolCallMarkup(userRequest) &&
-      delegateSuccessReplyContainsForbiddenToolMarkup(trimmed)
+      delegateSuccessReplyContainsForbiddenToolMarkup(visibleReply)
     ) {
       const stop = delegateToolTaskFailureShouldHardStopOrchestration(taskKind);
       return {
@@ -184,9 +234,9 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
         delegateOk: true,
         bootstrapFailed: false,
         bootstrapError: "",
-        resultEmpty: trimmed.length === 0,
+        resultEmpty: visibleReply.length === 0,
       },
-      reply: trimmed || "[delegate_tool_task] Done (empty reply).",
+      reply: visibleReply || "[delegate_tool_task] Done (empty reply).",
     };
   }
 

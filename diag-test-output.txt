@@ -1,0 +1,411 @@
+TAP version 13
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:relayHttpRequest',
+#   helperMethod: 'relayHttpRequest',
+#   delegatedMcpToolName: 'tool_execute',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:relayHttpRequest',
+#   helperMethod: 'relayHttpRequest',
+#   delegatedMcpToolName: 'tool_AzWW31H_execute',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:relayHttpRequest',
+#   helperMethod: 'relayHttpRequest',
+#   delegatedMcpToolName: 'tool_AzWW31H_execute',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:relayHttpRequest',
+#   helperMethod: 'relayHttpRequest',
+#   delegatedMcpToolName: 'tool_AzWW31H_execute',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_AzWW31H_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:relayHttpRequest',
+#   helperMethod: 'relayHttpRequest',
+#   delegatedMcpToolName: 'tool_AzWW31H_execute',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][openapi-describe-failed] helper=openapi_describe_operation delegatedMcpTool=tool_AzWW31H_search cacheKey=GET /accounts/{account_id}/gateway/rules error=openapi_describe_wrong_mirror_execute
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][openapi-describe-failed] helper=openapi_describe_operation delegatedMcpTool=tool_AzWW31H_search cacheKey=GET /accounts/{account_id}/gateway/rules error=[EdgeClaw][openapi_describe_operation:inner_parse] kind=describe_parse_failed shape_missing_object
+# {"marker":"[EdgeClaw][describe-normalizer-debug-v2]","cacheKey":"GET /accounts/{account_id}/gateway/rules","debugRawType":"object","debugRawKeys":["code","result","logs"],"debugUnwrapDepth":0,"debugCandidateType":"object","debugCandidateKeys":["code","result","logs"],"debugParseAttempts":true,"debugRawPreview":"{\\"code\\":0,\\"result\\":\\"not-json\\",\\"logs\\":[\\"x\\"]}","debugCandidatePreview":"{\\"code\\":0,\\"result\\":\\"not-json\\",\\"logs\\":[\\"x\\"]}"}
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][openapi-describe-failed] helper=openapi_describe_operation delegatedMcpTool=tool_search cacheKey=GET /accounts/{account_id}/gateway/rules error=describe failed from search mirror
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][openapi-relay-failure] {"boundaryLabel":"openapi_search:delegated_invoke","helper":"openapi_search","delegatedMcpTool":"tool_Z_search","failureKind":"delegated_mirror_invoke_throw","errorPreviewRaw":"Could not serialize object of type \\"DurableObject\\". This type does not support serialization."}
+# [EdgeClaw][tool-agent-nonretryable] kind=spec_not_defined_in_execute_tool tool=tool_fakemcp_execute reason=spec_reference_in_execute_code_blocked_before_rpc
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][tool-agent-nonretryable] kind=resource_not_found_on_account tool=tool_execute reason=The named resource does not exist in the target account or service. Verify the identifier before retrying.
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][tool-agent-nonretryable] kind=resource_not_found_on_account tool=tool_execute reason=The named resource does not exist in the target account or service. Verify the identifier before retrying.
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_search',
+#   helperMethod: 'openapi_search',
+#   delegatedMcpToolName: 'tool_diag999_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][codemode-wire-delegated] {
+#   boundaryLabel: 'invokeToolExecute:resolved:openapi_describe_operation',
+#   helperMethod: 'openapi_describe_operation',
+#   delegatedMcpToolName: 'tool_diag999_search',
+#   rawExecuteResolved: true,
+#   rawConstructorName: 'Object'
+# }
+# [EdgeClaw][describe-normalizer-version] accepts_top_level_operation_string=v1
+# [EdgeClaw][openapi-describe-failed] helper=openapi_describe_operation delegatedMcpTool=tool_diag999_search cacheKey=GET /accounts/{account_id}/diag-resources error=[EdgeClaw][openapi_describe_operation:inner_parse] kind=describe_parse_failed shape_missing_object
+# {"marker":"[EdgeClaw][describe-normalizer-debug-v2]","cacheKey":"GET /accounts/{account_id}/diag-resources","debugRawType":"object","debugRawKeys":["completelyUnknownKey","noOpFields"],"debugUnwrapDepth":0,"debugCandidateType":"object","debugCandidateKeys":["completelyUnknownKey","noOpFields"],"debugParseAttempts":false,"debugRawPreview":"{\\"completelyUnknownKey\\":42,\\"noOpFields\\":true}","debugCandidatePreview":"{\\"completelyUnknownKey\\":42,\\"noOpFields\\":true}"}
+# Subtest: CODEMODE_RELAYER_ROUTING_TOOL_IDS matches relay meta keys
+ok 1 - CODEMODE_RELAYER_ROUTING_TOOL_IDS matches relay meta keys
+  ---
+  duration_ms: 2.8856
+  ...
+# Subtest: Codemode router smoke ΓÇö tools_find({ query }) host path matches model expectation
+ok 2 - Codemode router smoke ΓÇö tools_find({ query }) host path matches model expectation
+  ---
+  duration_ms: 2.5809
+  ...
+# Subtest: probe regression: Object.keys(cm) can be empty while helpers still exist via property access
+ok 3 - probe regression: Object.keys(cm) can be empty while helpers still exist via property access
+  ---
+  duration_ms: 0.2534
+  ...
+# Subtest: one invocation shares ALS store across openapi_search -> openapi_describe_operation -> cloudflare_request
+ok 4 - one invocation shares ALS store across openapi_search -> openapi_describe_operation -> cloudflare_request
+  ---
+  duration_ms: 11.2462
+  ...
+# Subtest: after awaited openapi_describe_operation, cloudflare_request missing-cache status is not never_called
+ok 5 - after awaited openapi_describe_operation, cloudflare_request missing-cache status is not never_called
+  ---
+  duration_ms: 3.2946
+  ...
+# Subtest: strict Codemode args: openapi_search rejects unknown keys with unknown_helper_argument
+ok 6 - strict Codemode args: openapi_search rejects unknown keys with unknown_helper_argument
+  ---
+  duration_ms: 1.1512
+  ...
+# Subtest: strict planner: missing required query blocks before second execute
+ok 7 - strict planner: missing required query blocks before second execute
+  ---
+  duration_ms: 3.0586
+  ...
+# Subtest: openapi_describe_operation routes through tool_*_search (never tool_*_execute)
+ok 8 - openapi_describe_operation routes through tool_*_search (never tool_*_execute)
+  ---
+  duration_ms: 3.2399
+  ...
+# Subtest: openapi_describe_operation unwraps wrapped {code,result,logs} payload and extracts operation from result.paths
+ok 9 - openapi_describe_operation unwraps wrapped {code,result,logs} payload and extracts operation from result.paths
+  ---
+  duration_ms: 7.779
+  ...
+# Subtest: openapi_describe_operation accepts wrapped stringified payload with top-level operation and enables strict chain cloudflare_request
+ok 10 - openapi_describe_operation accepts wrapped stringified payload with top-level operation and enables strict chain cloudflare_request
+  ---
+  duration_ms: 3.3008
+  ...
+# Subtest: normalizeDescribePayload handles exact live shape: stringified JSON with top-level ok:true and operation object
+ok 11 - normalizeDescribePayload handles exact live shape: stringified JSON with top-level ok:true and operation object
+  ---
+  duration_ms: 4.006
+  ...
+# Subtest: REGRESSION: real MCP wrapper with code,result,logs - unwraps stringified result containing ok:true,operation:{...}
+ok 12 - REGRESSION: real MCP wrapper with code,result,logs - unwraps stringified result containing ok:true,operation:{...}
+  ---
+  duration_ms: 2.6321
+  ...
+# Subtest: read-only GET fallback works only for search-confirmed list endpoint when describe is unavailable
+ok 13 - read-only GET fallback works only for search-confirmed list endpoint when describe is unavailable
+  ---
+  duration_ms: 2.3075
+  ...
+# Subtest: openapi_describe_operation classifies 'spec is not defined' as wrong mirror routing
+ok 14 - openapi_describe_operation classifies 'spec is not defined' as wrong mirror routing
+  ---
+  duration_ms: 4.8053
+  ...
+# Subtest: openapi_describe_operation surfaces normalized shape keys on parse failure
+ok 15 - openapi_describe_operation surfaces normalized shape keys on parse failure
+  ---
+  duration_ms: 2.6207
+  ...
+# Subtest: same codemode invocation search -> describe -> request succeeds
+ok 16 - same codemode invocation search -> describe -> request succeeds
+  ---
+  duration_ms: 3.2084
+  ...
+# Subtest: cloudflare_request uses execute mirror (not search mirror)
+ok 17 - cloudflare_request uses execute mirror (not search mirror)
+  ---
+  duration_ms: 1.9655
+  ...
+# Subtest: cloudflare_request cache lookup resolves concrete path via operationPathTemplate
+ok 18 - cloudflare_request cache lookup resolves concrete path via operationPathTemplate
+  ---
+  duration_ms: 1.7243
+  ...
+# Subtest: failed describe reports openapi_describe_failed_same_invocation (not missing same invocation)
+ok 19 - failed describe reports openapi_describe_failed_same_invocation (not missing same invocation)
+  ---
+  duration_ms: 1.9608
+  ...
+# Subtest: strict planner: knownValues satisfy path segment ΓåÆ executes HTTP inner
+ok 20 - strict planner: knownValues satisfy path segment ΓåÆ executes HTTP inner
+  ---
+  duration_ms: 1.7213
+  ...
+# Subtest: strict planner cache: openapi_describe `{account_id}` template matches concrete /accounts/<32hex>/ path
+ok 21 - strict planner cache: openapi_describe `{account_id}` template matches concrete /accounts/<32hex>/ path
+  ---
+  duration_ms: 1.4995
+  ...
+# Subtest: strict planner cache: openapi_describe concrete /accounts/<32hex>/ path matches `{account_id}` template request
+ok 22 - strict planner cache: openapi_describe concrete /accounts/<32hex>/ path matches `{account_id}` template request
+  ---
+  duration_ms: 1.2812
+  ...
+# Subtest: cloudflare_request uses explicit target account_id from knownValues instead of runtime account
+ok 23 - cloudflare_request uses explicit target account_id from knownValues instead of runtime account
+  ---
+  duration_ms: 1.6487
+  ...
+# Subtest: cloudflare_request rejects unknown helper keys on strict relay surface
+ok 24 - cloudflare_request rejects unknown helper keys on strict relay surface
+  ---
+  duration_ms: 0.8432
+  ...
+# Subtest: cloudflare_request accepts reduction fields (value/perPage/caseInsensitiveFields)
+ok 25 - cloudflare_request accepts reduction fields (value/perPage/caseInsensitiveFields)
+  ---
+  duration_ms: 6.7263
+  ...
+# Subtest: cloudflare_request helper failure remains ok:false (not converted to scannedCount:0)
+ok 26 - cloudflare_request helper failure remains ok:false (not converted to scannedCount:0)
+  ---
+  duration_ms: 1.7433
+  ...
+# Subtest: cloudflare_request parse failures return non-retryable compact parse envelope
+ok 27 - cloudflare_request parse failures return non-retryable compact parse envelope
+  ---
+  duration_ms: 1.4961
+  ...
+# Subtest: cloudflare_request without schema lookup trips missing_schema_lookup inside a Codemode session
+ok 28 - cloudflare_request without schema lookup trips missing_schema_lookup inside a Codemode session
+  ---
+  duration_ms: 1.7335
+  ...
+# Subtest: cloudflare_request returns reduced compact payload for huge list responses (no raw leakage)
+ok 29 - cloudflare_request returns reduced compact payload for huge list responses (no raw leakage)
+  ---
+  duration_ms: 2.4974
+  ...
+# Subtest: cloudflare_request sanitizes control characters and still reduces results
+ok 30 - cloudflare_request sanitizes control characters and still reduces results
+  ---
+  duration_ms: 1.3674
+  ...
+# Subtest: cloudflare_request paginates in one invocation and tracks scannedCount/matchedCount
+ok 31 - cloudflare_request paginates in one invocation and tracks scannedCount/matchedCount
+  ---
+  duration_ms: 1.6648
+  ...
+# Subtest: cloudflare_request reduction path avoids detail and mutation endpoint calls
+ok 32 - cloudflare_request reduction path avoids detail and mutation endpoint calls
+  ---
+  duration_ms: 1.9721
+  ...
+# Subtest: reuse-live-sdk-server style mirror relay: tools_find, tools_call_code, openapi planner chain ΓÇö Rpc wire stays JSON-safe
+ok 33 - reuse-live-sdk-server style mirror relay: tools_find, tools_call_code, openapi planner chain ΓÇö Rpc wire stays JSON-safe
+  ---
+  duration_ms: 5.3691
+  ...
+# Subtest: tools_call_code rejects JavaScript Function values for `code`
+ok 34 - tools_call_code rejects JavaScript Function values for `code`
+  ---
+  duration_ms: 0.3309
+  ...
+# Subtest: openapi_search delegated mirror throws surface [EdgeClaw] boundary (not generic neutral text)
+ok 35 - openapi_search delegated mirror throws surface [EdgeClaw] boundary (not generic neutral text)
+  ---
+  duration_ms: 1.1372
+  ...
+# Subtest: openapi_search JSON-safes raw MCP tool result when tryParseJsonFromMcpToolResult returns the object unchanged
+ok 36 - openapi_search JSON-safes raw MCP tool result when tryParseJsonFromMcpToolResult returns the object unchanged
+  ---
+  duration_ms: 0.7489
+  ...
+# Subtest: classifyNonRetryableToolError: 'does not exist on your account' is resource_not_found_on_account
+ok 37 - classifyNonRetryableToolError: 'does not exist on your account' is resource_not_found_on_account
+  ---
+  duration_ms: 0.4018
+  ...
+# Subtest: classifyNonRetryableToolError: 'spec is not defined' is discovery_global_not_in_execute_scope
+ok 38 - classifyNonRetryableToolError: 'spec is not defined' is discovery_global_not_in_execute_scope
+  ---
+  duration_ms: 0.236
+  ...
+# Subtest: classifyNonRetryableToolError: transient network error is null (retryable)
+ok 39 - classifyNonRetryableToolError: transient network error is null (retryable)
+  ---
+  duration_ms: 0.6049
+  ...
+# Subtest: classifyNonRetryableToolError: authentication error is api_authentication_error
+ok 40 - classifyNonRetryableToolError: authentication error is api_authentication_error
+  ---
+  duration_ms: 0.2242
+  ...
+# Subtest: classifyNonRetryableToolError: generic 401 Unauthorized is api_authentication_error
+ok 41 - classifyNonRetryableToolError: generic 401 Unauthorized is api_authentication_error
+  ---
+  duration_ms: 0.1238
+  ...
+# Subtest: tools_call_code: spec-inspection code targeting an _execute tool is blocked before RPC with nonRetryable
+ok 42 - tools_call_code: spec-inspection code targeting an _execute tool is blocked before RPC with nonRetryable
+  ---
+  duration_ms: 0.659
+  ...
+# Subtest: tools_call_code: spec.paths in code targeting a _search tool is allowed (spec is defined in search env)
+ok 43 - tools_call_code: spec.paths in code targeting a _search tool is allowed (spec is defined in search env)
+  ---
+  duration_ms: 0.7244
+  ...
+# Subtest: cloudflare_request: 'does not exist on your account' error is classified non-retryable (Cloudflare 10007 regression fixture)
+ok 44 - cloudflare_request: 'does not exist on your account' error is classified non-retryable (Cloudflare 10007 regression fixture)
+  ---
+  duration_ms: 2.0423
+  ...
+# Subtest: cloudflare_request: non-retryable result skips coerce-and-retry path
+ok 45 - cloudflare_request: non-retryable result skips coerce-and-retry path
+  ---
+  duration_ms: 1.3839
+  ...
+# Subtest: DIAGNOSTIC: shape_missing_object failure includes describe-normalizer-debug-v2 fields
+ok 46 - DIAGNOSTIC: shape_missing_object failure includes describe-normalizer-debug-v2 fields
+  ---
+  duration_ms: 2.6205
+  ...
+1..46
+# tests 46
+# suites 0
+# pass 46
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1111.895

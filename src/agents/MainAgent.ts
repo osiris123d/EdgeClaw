@@ -17,6 +17,7 @@
  */
 
 import { DEFAULT_AURA_TTS_SPEAKER, parseAuraTtsSpeaker, type AuraTtsSpeaker } from "../lib/auraTts";
+import { shouldInjectVisibleAssistantMessage } from "./visibleAssistantInjectionHelper";
 import { Env } from "../lib/env";
 import {
   withVoice,
@@ -248,6 +249,7 @@ import {
   syncCodemodeWireDebugFromEnv,
   toDelegatedMcpRpcWireValue,
 } from "../tools/codemodeRouterHelpers";
+import { getToolEntryDescription, getToolEntrySchema } from "../tools/mcpToolFeedback";
 import { runCodemodeRelayRouterSanity } from "../tools/codemodeRouterSanity";
 import type { CodemodeSanityRunnerResult } from "../tools/codemodeRouterSanity";
 import {
@@ -496,6 +498,11 @@ export interface MainAgentConfig {
    * Defaults from `ENABLE_MAIN_TOOL_SURFACE_REDUCTION`.
    */
   enableMainToolSurfaceReduction?: boolean;
+  /**
+   * Legacy fallback: rely on provider-enforced tool call for delegate_tool_task.
+   * Default false keeps delegation deterministic in server code.
+   */
+  enableModelMediatedDelegateGate?: boolean;
 }
 
 /**
@@ -867,6 +874,269 @@ function rpcDelegatedStubPlainEnvelope(args: {
   }
 }
 
+const MCP_REQUIRED_TOOL_INPUT_PARAMS = [
+  "account_id",
+  "organization_id",
+  "project_id",
+  "workspace_id",
+  "tenant_id",
+  "region",
+] as const;
+
+type MappedToolInputParam = (typeof MCP_REQUIRED_TOOL_INPUT_PARAMS)[number];
+
+function readStringParamFromTopLevelInput(input: unknown, param: string): string | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const v = (input as Record<string, unknown>)[param];
+  if (typeof v !== "string") return undefined;
+  const trimmed = v.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function extractMappedToolInputsFromSchema(schema: unknown): Set<MappedToolInputParam> {
+  const out = new Set<MappedToolInputParam>();
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return out;
+  const rec = schema as Record<string, unknown>;
+  const required = Array.isArray(rec.required)
+    ? rec.required.filter((v): v is string => typeof v === "string")
+    : [];
+  for (const p of MCP_REQUIRED_TOOL_INPUT_PARAMS) {
+    if (required.includes(p)) out.add(p);
+  }
+  const props =
+    rec.properties && typeof rec.properties === "object" && !Array.isArray(rec.properties)
+      ? (rec.properties as Record<string, unknown>)
+      : undefined;
+  if (props) {
+    for (const p of MCP_REQUIRED_TOOL_INPUT_PARAMS) {
+      if (p in props && required.includes(p)) out.add(p);
+    }
+  }
+  return out;
+}
+
+function extractMappedToolInputsFromDescription(description: string): Set<MappedToolInputParam> {
+  const out = new Set<MappedToolInputParam>();
+  if (!description) return out;
+  for (const p of MCP_REQUIRED_TOOL_INPUT_PARAMS) {
+    const escaped = p.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    const mention = new RegExp(String.raw`\b${escaped}\b`, "i");
+    const requiredish = new RegExp(
+      String.raw`(?:please\s+specify|required|required\s+parameter|pass\s+.*\s+parameter|top-?level\s+tool\s+input)[^\n]{0,120}\b${escaped}\b|\b${escaped}\b[^\n]{0,120}(?:required|required\s+parameter|please\s+specify|top-?level)` ,
+      "i"
+    );
+    if (mention.test(description) && requiredish.test(description)) {
+      out.add(p);
+    }
+  }
+  return out;
+}
+
+function schemaSupportsMappedToolInput(schema: unknown, param: MappedToolInputParam): boolean {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) return false;
+  const rec = schema as Record<string, unknown>;
+  const required = Array.isArray(rec.required)
+    ? rec.required.filter((v): v is string => typeof v === "string")
+    : [];
+  if (required.includes(param)) return true;
+
+  const props =
+    rec.properties && typeof rec.properties === "object" && !Array.isArray(rec.properties)
+      ? (rec.properties as Record<string, unknown>)
+      : undefined;
+  return Boolean(props && param in props);
+}
+
+function descriptionMentionsMappedToolInput(description: string, param: MappedToolInputParam): boolean {
+  if (!description) return false;
+  const escaped = param.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+  return new RegExp(String.raw`\b${escaped}\b`, "i").test(description);
+}
+
+/**
+ * Extracts target account ID from user request text.
+ * Matches patterns like: "target account_id: <id>", "target account: <id>", "account_id: <id>", "account_id=<id>"
+ * Returns the first matching 32-hex Cloudflare account ID, excluding the runtime account.
+ */
+export function extractTargetAccountIdFromUserRequest(text: string, runtimeAccountId?: string): string | undefined {
+  if (!text || typeof text !== "string") return undefined;
+
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const runtime = typeof runtimeAccountId === "string" ? runtimeAccountId.trim().toLowerCase() : "";
+  const candidates: Array<{ id: string; isTargetLabeled: boolean; index: number }> = [];
+
+  const collect = (re: RegExp, isTargetLabeled: boolean): void => {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(normalized)) !== null) {
+      const raw = typeof m[1] === "string" ? m[1].trim().toLowerCase() : "";
+      if (!/^[a-f0-9]{32}$/.test(raw)) continue;
+      if (runtime && raw === runtime) continue;
+      candidates.push({ id: raw, isTargetLabeled, index: m.index });
+    }
+  };
+
+  collect(/target\s+account[_\s]?id\s*[:=]\s*([a-f0-9]{32})/gi, true);
+  collect(/target\s+account\s*[:=]\s*([a-f0-9]{32})/gi, true);
+  collect(/account[_\s]?id\s*[:=]\s*([a-f0-9]{32})/gi, false);
+
+  if (candidates.length === 0) return undefined;
+
+  candidates.sort((a, b) => {
+    if (a.isTargetLabeled !== b.isTargetLabeled) return a.isTargetLabeled ? -1 : 1;
+    return a.index - b.index;
+  });
+  return candidates[0]?.id;
+}
+
+function extractExplicitToolInputHintsFromTaskText(text: string): Partial<Record<MappedToolInputParam, string>> {
+  const out: Partial<Record<MappedToolInputParam, string>> = {};
+  if (!text) return out;
+  const normalized = text.replace(/\r\n?/g, "\n");
+
+  const strictPatterns: Array<{ param: MappedToolInputParam; re: RegExp }> = [
+    { param: "account_id", re: /(?:^|\n)\s*Target\s+account_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "account_id", re: /(?:^|\n)\s*account_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "organization_id", re: /(?:^|\n)\s*organization_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "project_id", re: /(?:^|\n)\s*project_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "workspace_id", re: /(?:^|\n)\s*workspace_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "tenant_id", re: /(?:^|\n)\s*tenant_id\s*:\s*([A-Za-z0-9_-]{4,128})/i },
+    { param: "region", re: /(?:^|\n)\s*region\s*:\s*([A-Za-z0-9_.-]{2,64})/i },
+  ];
+  for (const { param, re } of strictPatterns) {
+    if (out[param]) continue;
+    const m = normalized.match(re);
+    if (m?.[1]) out[param] = m[1].trim();
+  }
+
+  // Legacy compact notation seen in operator prompts: "ID: <account-id>".
+  if (!out.account_id) {
+    const m = normalized.match(/(?:^|\n)\s*ID\s*:\s*([A-Za-z0-9_-]{4,128})/i);
+    if (m?.[1]) out.account_id = m[1].trim();
+  }
+  return out;
+}
+
+function resolveRequiredToolInputsForHostBoundary(args: {
+  toolName: string;
+  delegatedInput: unknown;
+  toolDescription: string;
+  toolSchema: unknown;
+  explicitTaskText: string;
+  configuredContext?: Partial<Record<MappedToolInputParam, string>>;
+}):
+  | { ok: true; injectedInput: unknown }
+  | { ok: false; error: string } {
+  // 1) Extract explicit task hints first so explicit identifiers can drive injectable-set expansion.
+  const explicit = extractExplicitToolInputHintsFromTaskText(args.explicitTaskText);
+  const explicitPairs = Object.entries(explicit)
+    .filter(([, v]) => typeof v === "string" && v.trim().length > 0)
+    .map(([k, v]) => `${k}:${String(v).slice(0, 64)}`)
+    .join(",") || "none";
+  console.info(
+    `[EdgeClaw][mcp-required-input-extracted] tool=${args.toolName} explicit=${explicitPairs}`
+  );
+
+  const required = new Set<MappedToolInputParam>([
+    ...extractMappedToolInputsFromSchema(args.toolSchema),
+    ...extractMappedToolInputsFromDescription(args.toolDescription),
+  ]);
+  // 2) If explicit hints are present and the tool schema OR description supports the parameter,
+  // treat it as injectable even when description/schema did not explicitly mark it "required".
+  for (const param of MCP_REQUIRED_TOOL_INPUT_PARAMS) {
+    if (!explicit[param]) continue;
+    if (
+      schemaSupportsMappedToolInput(args.toolSchema, param) ||
+      descriptionMentionsMappedToolInput(args.toolDescription, param)
+    ) {
+      required.add(param);
+    }
+  }
+
+  const requiredList = [...required].join(",") || "none";
+  const explicitList = Object.keys(explicit).join(",") || "none";
+
+  if (required.size === 0) {
+    console.info(
+      `[EdgeClaw][mcp-required-input-inject-skip] tool=${args.toolName} required=${requiredList} explicit=${explicitList}`
+    );
+    return { ok: true, injectedInput: args.delegatedInput };
+  }
+
+  const inputObj =
+    args.delegatedInput && typeof args.delegatedInput === "object" && !Array.isArray(args.delegatedInput)
+      ? ({ ...(args.delegatedInput as Record<string, unknown>) } as Record<string, unknown>)
+      : ({} as Record<string, unknown>);
+
+  // Track which keys are actually injected (not just existing in input).
+  const injectedKeys = new Set<MappedToolInputParam>();
+
+  for (const param of required) {
+    const existing = readStringParamFromTopLevelInput(args.delegatedInput, param);
+    const fromTask = explicit[param];
+    const fromConfig =
+      typeof args.configuredContext?.[param] === "string" && args.configuredContext[param]!.trim().length > 0
+        ? args.configuredContext[param]!.trim()
+        : undefined;
+    const candidate = fromTask || fromConfig;
+
+    if (!candidate) continue;
+
+    if (existing && existing !== candidate) {
+      return {
+        ok: false,
+        error:
+          `[EdgeClaw][mcp-required-input-inject-conflict] type=conflicting_tool_input tool=${args.toolName} parameter=${param} ` +
+          `existing=${existing} context=${candidate}`,
+      };
+    }
+    if (!existing) {
+      inputObj[param] = candidate;
+      injectedKeys.add(param);
+      const source = fromTask ? "explicit_task_value" : "configured_runtime_context";
+      console.info(
+        `[EdgeClaw][mcp-required-input-inject] tool=${args.toolName} parameter=${param} source=${source} injectedKeys=${[...injectedKeys].join(",")}`
+      );
+    }
+  }
+
+  // Only report injection if keys were actually added.
+  if (injectedKeys.size === 0) {
+    console.info(
+      `[EdgeClaw][mcp-required-input-inject-skip] tool=${args.toolName} required=${requiredList} explicit=${explicitList}`
+    );
+    return { ok: true, injectedInput: args.delegatedInput };
+  }
+  return { ok: true, injectedInput: inputObj };
+}
+
+function resolveConfiguredToolInputsForRouter(env: Env): Partial<Record<MappedToolInputParam, string>> {
+  const read = (...vals: Array<unknown>): string | undefined => {
+    for (const v of vals) {
+      if (typeof v === "string" && v.trim().length > 0) return v.trim();
+    }
+    return undefined;
+  };
+  const vars = (env.Variables ?? {}) as Record<string, unknown>;
+  const envMap = env as unknown as Record<string, unknown>;
+  return {
+    ...(read(vars.ORGANIZATION_ID, envMap.ORGANIZATION_ID)
+      ? { organization_id: read(vars.ORGANIZATION_ID, envMap.ORGANIZATION_ID)! }
+      : {}),
+    ...(read(vars.PROJECT_ID, envMap.PROJECT_ID)
+      ? { project_id: read(vars.PROJECT_ID, envMap.PROJECT_ID)! }
+      : {}),
+    ...(read(vars.WORKSPACE_ID, envMap.WORKSPACE_ID)
+      ? { workspace_id: read(vars.WORKSPACE_ID, envMap.WORKSPACE_ID)! }
+      : {}),
+    ...(read(vars.TENANT_ID, envMap.TENANT_ID)
+      ? { tenant_id: read(vars.TENANT_ID, envMap.TENANT_ID)! }
+      : {}),
+    ...(read(vars.REGION, envMap.REGION)
+      ? { region: read(vars.REGION, envMap.REGION)! }
+      : {}),
+  };
+}
+
 /** Durable Object `ctx.storage` key for the chosen aura-1 speaker (survives hibernation). */
 const EDGECLAW_AURA_TTS_SPEAKER_STORAGE_KEY = "edgeclaw.auraTtsSpeaker.v1";
 
@@ -984,6 +1254,8 @@ export class MainAgent extends BaseThinkWithVoice {
    * via `activeTools` filtering (full registry unchanged).
    */
   protected enableMainToolSurfaceReduction = false;
+  /** Legacy fallback gate where model is forced to call delegate_tool_task. */
+  protected enableModelMediatedDelegateGate = false;
   /**
    * Voice: WebSocket + Workers AI STT/TTS. Requires `ENABLE_VOICE` / settings
    * and `env.AI`. When false, `beforeCallStart` refuses voice sessions.
@@ -1075,6 +1347,10 @@ export class MainAgent extends BaseThinkWithVoice {
   private _turnToolAgentDelegateFailureExactReply = "";
   /** Exact ToolAgent reply for the next step — deterministic assistant text (successful delegate). */
   private _turnToolAgentDelegateSuccessExactReply = "";
+  /** True once a delegated success assistant message is already visible for this turn. */
+  private _turnToolAgentDelegateSuccessAssistantInsertedOk = false;
+  /** True once a delegated failure assistant message is already visible for this turn. */
+  private _turnToolAgentDelegateFailureAssistantInsertedOk = false;
   /** True when ToolAgent MCP restore/bootstrap failed (subset of {@link _turnToolAgentDelegationFailed}). */
   private _turnToolAgentBootstrapFailed = false;
   /** Sanitized short error for turn.summary when {@link _turnToolAgentBootstrapFailed}. */
@@ -1131,6 +1407,8 @@ export class MainAgent extends BaseThinkWithVoice {
   private _turnBrowserIntentDetected = false;
   /** Latest user message text for the current turn (set in beforeTurn). */
   private _turnLatestUserMessage = "";
+  /** Original delegated tool-task text keyed by correlation id for host-boundary MCP input extraction. */
+  private readonly _delegatedTaskTextByCorrelation = new Map<string, string>();
   /**
    * Set in `beforeTurn` from the client chat body: only when
    * `settings.agentShouldSpeak === true` may we play TTS for **typed** turns
@@ -1224,6 +1502,9 @@ export class MainAgent extends BaseThinkWithVoice {
     this.enableMainToolSurfaceReduction =
       config.enableMainToolSurfaceReduction ??
       runtime.featureFlags.enableMainToolSurfaceReduction;
+    this.enableModelMediatedDelegateGate =
+      config.enableModelMediatedDelegateGate ??
+      runtime.featureFlags.enableModelMediatedDelegateGate;
     this.enableVoice = config.enableVoice ?? runtime.featureFlags.enableVoice;
     const browserRunAuth = resolveBrowserRunAuth(env);
     const cloudflareAccountId = browserRunAuth.accountId;
@@ -1388,6 +1669,8 @@ export class MainAgent extends BaseThinkWithVoice {
       this._turnToolAgentDelegationFailed = false;
       this._turnToolAgentDelegateFailureExactReply = "";
       this._turnToolAgentDelegateSuccessExactReply = "";
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = false;
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = false;
       this._turnToolAgentBootstrapFailed = false;
       this._turnToolAgentBootstrapError = "";
       this._turnDelegateGateStrictToolCall = false;
@@ -2255,88 +2538,7 @@ export class MainAgent extends BaseThinkWithVoice {
                 guidanceSkillKey?: string;
                 constraints?: string;
               }): Promise<string> => {
-                try {
-                  agent._turnToolAgentDelegationTerminal = false;
-                  agent._turnToolAgentDelegateOk = false;
-                  agent._turnToolAgentResultEmpty = false;
-                  agent._turnToolAgentOrchestrationAfterDelegate = false;
-                  agent._turnToolAgentDelegationFailed = false;
-                  agent._turnToolAgentDelegateFailureExactReply = "";
-                  agent._turnToolAgentDelegateSuccessExactReply = "";
-                  agent._turnToolAgentBootstrapFailed = false;
-                  agent._turnToolAgentBootstrapError = "";
-                  agent._turnDelegatedToToolAgent = true;
-                  agent._turnToolAgentDelegationMeta = {
-                    agent: "ToolAgent",
-                    task: args.taskKind,
-                  };
-                  const cfAcct = agent.resolveCloudflareAccountIdForRouter();
-                  const body = formatDelegateToolAgentMessage({
-                    userRequest: args.userRequest,
-                    taskKind: args.taskKind,
-                    ...(args.guidanceSkillKey?.trim()
-                      ? { guidanceSkillKey: args.guidanceSkillKey }
-                      : {}),
-                    ...(args.constraints?.trim() ? { constraints: args.constraints } : {}),
-                    ...(cfAcct ? { cloudflareAccountId: cfAcct } : {}),
-                  });
-                  const result = await agent.delegateToToolAgent(body);
-                  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
-                    taskKind: args.taskKind,
-                    userRequest: args.userRequest,
-                    rpc: {
-                      ok: result.ok,
-                      error: result.error,
-                      text: result.text,
-                    },
-                  });
-                  if (!result.ok) {
-                    agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
-                    agent._turnToolAgentDelegationFailed = latches.delegationFailed;
-                    agent._turnToolAgentDelegateFailureExactReply = reply;
-                    agent._turnToolAgentDelegateSuccessExactReply = "";
-                    agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
-                    agent._turnToolAgentBootstrapError = latches.bootstrapError;
-                    return reply;
-                  }
-                  if (latches.delegationFailed) {
-                    agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
-                    agent._turnToolAgentDelegationFailed = true;
-                    agent._turnToolAgentDelegateFailureExactReply = reply;
-                    agent._turnToolAgentDelegateSuccessExactReply = "";
-                    agent._turnToolAgentDelegateOk = false;
-                    agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
-                    agent._turnToolAgentBootstrapError = latches.bootstrapError;
-                    agent._turnToolAgentResultEmpty = false;
-                    return reply;
-                  }
-                  agent._turnToolAgentDelegateOk = latches.delegateOk;
-                  agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
-                  agent._turnToolAgentDelegationFailed = false;
-                  agent._turnToolAgentDelegateFailureExactReply = "";
-                  agent._turnToolAgentDelegateSuccessExactReply = reply;
-                  agent._turnToolAgentResultEmpty = latches.resultEmpty;
-                  return reply;
-                } catch (e) {
-                  const msg = e instanceof Error ? e.message : String(e);
-                  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
-                    taskKind: args.taskKind,
-                    userRequest: args.userRequest,
-                    rpc: { ok: false, error: msg, text: "" },
-                  });
-                  agent._turnToolAgentDelegationTerminal = latches.delegationTerminal;
-                  agent._turnToolAgentDelegationFailed = latches.delegationFailed;
-                  agent._turnToolAgentDelegateFailureExactReply = reply;
-                  agent._turnToolAgentDelegateSuccessExactReply = "";
-                  agent._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
-                  agent._turnToolAgentBootstrapError = latches.bootstrapError;
-                  agent._turnDelegatedToToolAgent = true;
-                  agent._turnToolAgentDelegationMeta = {
-                    agent: "ToolAgent",
-                    task: args.taskKind,
-                  };
-                  return reply;
-                }
+                return agent.executeToolAgentDelegationDirectly(args);
               },
             }),
           }
@@ -3282,6 +3484,47 @@ export class MainAgent extends BaseThinkWithVoice {
 
       if (this.enableToolAgentDelegation && delegateToolPresent) {
         const taskKind = wantsToolAgentDelegation ? "mcp_api" : mcpToolIntent.taskKind;
+        if (!this.enableModelMediatedDelegateGate) {
+          console.warn(
+            `[EdgeClaw][direct-delegation-enter] ` +
+              `enableModelMediatedDelegateGate=${this.enableModelMediatedDelegateGate} ` +
+              `enableToolAgentDelegation=${this.enableToolAgentDelegation} ` +
+              `delegateToolPresent=${delegateToolPresent} ` +
+              `taskKind=${taskKind} ` +
+              `activeTools=[] toolChoice=none`
+          );
+          let directReply: string;
+          try {
+            directReply = await this.executeToolAgentDelegationDirectly({
+              userRequest: userMessage,
+              taskKind,
+            });
+            console.warn(
+              `[EdgeClaw][direct-delegation-resolved] ` +
+                `directReplyLen=${directReply.length} ` +
+                `directReplyPreview=${JSON.stringify(directReply.slice(0, 200))}`
+            );
+          } catch (delegationErr: unknown) {
+            const eName = delegationErr instanceof Error ? delegationErr.name : "unknown";
+            const eMsg = delegationErr instanceof Error ? delegationErr.message : String(delegationErr);
+            const eStack = delegationErr instanceof Error ? (delegationErr.stack ?? "").slice(0, 300) : "";
+            console.error(
+              `[EdgeClaw][direct-delegation-threw] ` +
+                `errorName=${eName} errorMessage=${eMsg.slice(0, 500)} stack=${eStack}`
+            );
+            directReply = `ToolAgent delegation failed: ${eMsg.slice(0, 2000)}`;
+          }
+          this._turnToolAgentDelegateSuccessAssistantInsertedOk = true;
+          this._turnDelegateGateStrictToolCall = false;
+          return this.finalizeBeforeTurnGatewayAuditAndFreeze(thinkMergedTools, {
+            ...baseConfig,
+            model: createDeterministicTextModel(directReply),
+            activeTools: [],
+            toolChoice: "none",
+            maxSteps: 1,
+          });
+        }
+
         const delegationSupplement =
           "[EdgeClaw delegation gate] The user instructed delegation to ToolAgent. Call **only** `delegate_tool_task` " +
           `once: set taskKind=\`${taskKind}\` for this workload, copy the substantive task details into userRequest; ` +
@@ -3290,7 +3533,12 @@ export class MainAgent extends BaseThinkWithVoice {
           `[EdgeClaw][tool-agent-delegation-grounding] explicitIntent=${wantsToolAgentDelegation ? "yes" : "no"} ` +
             `mcpToolIntent=${mcpToolIntent.matched ? "yes" : "no"} ` +
             `reason=${wantsToolAgentDelegation ? "explicit_delegate_phrase" : mcpToolIntent.reason} ` +
-            `taskKind=${taskKind} toolChoice=required activeTools=delegate_tool_task`
+            `taskKind=${taskKind} mode=model_mediated_delegate_gate toolChoice=required activeTools=delegate_tool_task`
+        );
+        console.warn(
+          `[EdgeClaw][model-mediated-delegation-selected] ` +
+            `enableModelMediatedDelegateGate=${this.enableModelMediatedDelegateGate} ` +
+            `taskKind=${taskKind}`
         );
         this._turnDelegateGateStrictToolCall = true;
         return this.finalizeBeforeTurnGatewayAuditAndFreeze(thinkMergedTools, {
@@ -3998,6 +4246,165 @@ export class MainAgent extends BaseThinkWithVoice {
     return typeof id === "string" && id.trim() ? id.trim() : undefined;
   }
 
+  private async executeToolAgentDelegationDirectly(args: {
+    userRequest: string;
+    taskKind: "mcp_api" | "external_api" | "tool_orchestration" | "unknown";
+    guidanceSkillKey?: string;
+    constraints?: string;
+  }): Promise<string> {
+    try {
+      this._turnToolAgentDelegationTerminal = false;
+      this._turnToolAgentDelegateOk = false;
+      this._turnToolAgentResultEmpty = false;
+      this._turnToolAgentOrchestrationAfterDelegate = false;
+      this._turnToolAgentDelegationFailed = false;
+      this._turnToolAgentDelegateFailureExactReply = "";
+      this._turnToolAgentDelegateSuccessExactReply = "";
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = false;
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = false;
+      this._turnToolAgentBootstrapFailed = false;
+      this._turnToolAgentBootstrapError = "";
+      this._turnDelegatedToToolAgent = true;
+      this._turnToolAgentDelegationMeta = {
+        agent: "ToolAgent",
+        task: args.taskKind,
+      };
+
+      const runtimeAccountId = this.resolveCloudflareAccountIdForRouter();
+      let targetAccountId = extractTargetAccountIdFromUserRequest(args.userRequest, runtimeAccountId);
+      if (!targetAccountId) {
+        const explicitInputHints = extractExplicitToolInputHintsFromTaskText(args.userRequest);
+        targetAccountId =
+          typeof explicitInputHints.account_id === "string" &&
+          explicitInputHints.account_id.trim().length > 0
+            ? explicitInputHints.account_id.trim()
+            : undefined;
+      }
+
+      const body = formatDelegateToolAgentMessage({
+        userRequest: args.userRequest,
+        taskKind: args.taskKind,
+        ...(args.guidanceSkillKey?.trim() ? { guidanceSkillKey: args.guidanceSkillKey } : {}),
+        ...(args.constraints?.trim() ? { constraints: args.constraints } : {}),
+        ...(runtimeAccountId ? { runtimeAccountId } : {}),
+        ...(targetAccountId ? { targetAccountId } : {}),
+      });
+
+      const result = await this.delegateToToolAgent(body);
+      console.warn(JSON.stringify({
+        marker: "[EdgeClaw][delegate-tool-task-rpc-result]",
+        rpcOk: result.ok,
+        rpcTextLen: result.text?.length ?? 0,
+        rpcError: result.error?.slice(0, 200) ?? null,
+        hasToolAgentResult: !!result.toolAgentResult,
+        toolAgentResultOk: result.toolAgentResult?.ok ?? null,
+        toolAgentMatchedCount: result.toolAgentResult?.matchedCount ?? null,
+        toolAgentHasResultText: !!result.toolAgentResult?.resultText,
+      }));
+      const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+        taskKind: args.taskKind,
+        userRequest: args.userRequest,
+        rpc: {
+          ok: result.ok,
+          error: result.error,
+          text: result.text,
+          toolAgentResult: result.toolAgentResult,
+        },
+      });
+      console.warn(JSON.stringify({
+        marker: "[EdgeClaw][delegate-tool-task-reply]",
+        replyLen: reply.length,
+        replyPreview: reply.slice(0, 300),
+        delegationTerminal: latches.delegationTerminal,
+        delegationFailed: latches.delegationFailed,
+        delegateOk: latches.delegateOk,
+        resultEmpty: latches.resultEmpty,
+      }));
+
+      if (!result.ok) {
+        this._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+        this._turnToolAgentDelegationFailed = latches.delegationFailed;
+        this._turnToolAgentDelegateFailureExactReply = reply;
+        this._turnToolAgentDelegateSuccessExactReply = "";
+        this._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+        this._turnToolAgentBootstrapError = latches.bootstrapError;
+        return reply;
+      }
+
+      if (latches.delegationFailed) {
+        this._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+        this._turnToolAgentDelegationFailed = true;
+        this._turnToolAgentDelegateFailureExactReply = reply;
+        this._turnToolAgentDelegateSuccessExactReply = "";
+        this._turnToolAgentDelegateOk = false;
+        this._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+        this._turnToolAgentBootstrapError = latches.bootstrapError;
+        this._turnToolAgentResultEmpty = false;
+        return reply;
+      }
+
+      this._turnToolAgentDelegateOk = latches.delegateOk;
+      this._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+      this._turnToolAgentDelegationFailed = false;
+      this._turnToolAgentDelegateFailureExactReply = "";
+      this._turnToolAgentDelegateSuccessExactReply = reply;
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = false;
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = false;
+      this._turnToolAgentResultEmpty = latches.resultEmpty;
+      return reply;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+        taskKind: args.taskKind,
+        userRequest: args.userRequest,
+        rpc: { ok: false, error: msg, text: "" },
+      });
+      this._turnToolAgentDelegationTerminal = latches.delegationTerminal;
+      this._turnToolAgentDelegationFailed = latches.delegationFailed;
+      this._turnToolAgentDelegateFailureExactReply = reply;
+      this._turnToolAgentDelegateSuccessExactReply = "";
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = false;
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = false;
+      this._turnToolAgentBootstrapFailed = latches.bootstrapFailed;
+      this._turnToolAgentBootstrapError = latches.bootstrapError;
+      this._turnDelegatedToToolAgent = true;
+      this._turnToolAgentDelegationMeta = {
+        agent: "ToolAgent",
+        task: args.taskKind,
+      };
+      return reply;
+    }
+  }
+
+  private rememberDelegatedTaskTextForCorrelation(correlationId: string, delegatedTaskText: string): void {
+    const cid = correlationId.trim();
+    const text = delegatedTaskText.trim();
+    if (!cid || !text) return;
+    this._delegatedTaskTextByCorrelation.set(cid, text);
+    if (this._delegatedTaskTextByCorrelation.size > 128) {
+      const firstKey = this._delegatedTaskTextByCorrelation.keys().next().value;
+      if (typeof firstKey === "string") {
+        this._delegatedTaskTextByCorrelation.delete(firstKey);
+      }
+    }
+  }
+
+  private resolveDelegatedTaskTextForHostBoundary(args: {
+    correlationId?: string;
+    payloadDelegatedTaskText?: string;
+    latestUserText: string;
+  }): string {
+    const correlationId = typeof args.correlationId === "string" ? args.correlationId.trim() : "";
+    if (correlationId) {
+      const correlated = this._delegatedTaskTextByCorrelation.get(correlationId);
+      if (typeof correlated === "string" && correlated.trim().length > 0) return correlated;
+    }
+    const payloadText =
+      typeof args.payloadDelegatedTaskText === "string" ? args.payloadDelegatedTaskText.trim() : "";
+    if (payloadText.length > 0) return payloadText;
+    return args.latestUserText;
+  }
+
   private maybeRecordCodemodeToolFailure(ctx: ToolCallResultContext): void {
     if (ctx.toolName !== "codemode" || ctx.success) return;
     const errUnknown = ctx.error;
@@ -4074,14 +4481,26 @@ export class MainAgent extends BaseThinkWithVoice {
   private async maybeInjectDelegateToolTaskSuccessAssistantMessage(
     result: ChatResponseResult
   ): Promise<void> {
-    const replyText = this._turnToolAgentDelegateSuccessExactReply.trim();
-    const resultTextLength = replyText.length;
-    if (!this._turnToolAgentDelegateOk || resultTextLength === 0) {
-      return;
+    const msg = result.message as unknown;
+    let replyText = this._turnToolAgentDelegateSuccessExactReply.trim();
+    if (typeof msg === "string" && msg.trim().length > 0) {
+      replyText = msg.trim();
     }
-    // Avoid injecting when the model already produced visible text from the terminal step.
-    const existingText = voiceExtractTextFromUiMessage(result.message).trim();
-    if (existingText.length > 0) {
+    const resultTextLength = replyText.length;
+    const existingText = typeof msg === "string" 
+      ? voiceExtractTextFromUiMessage(msg as any).trim()
+      : "";
+    const injectResult = shouldInjectVisibleAssistantMessage({
+      resultMessageText: existingText,
+      replyText,
+      latch: this._turnToolAgentDelegateSuccessAssistantInsertedOk,
+      shouldInject: this._turnToolAgentDelegateOk,
+    });
+    if (!injectResult.shouldInject) {
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = true;
+      console.log(
+        `[EdgeClaw][delegate-finalize] injectedVisibleAssistantMessage=no reason=${injectResult.reason}`
+      );
       return;
     }
     try {
@@ -4096,11 +4515,56 @@ export class MainAgent extends BaseThinkWithVoice {
       };
       await think.session.appendMessage(msg);
       think._broadcastMessages?.();
+      this._turnToolAgentDelegateSuccessAssistantInsertedOk = true;
       console.log(
-        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} injectedVisibleAssistantMessage=yes reason=maxSteps1_no_terminal_step`
+        `[EdgeClaw][delegate-finalize] resultTextLength=${resultTextLength} injectedVisibleAssistantMessage=yes ` +
+          `reason=${existingText.length > 0 ? "existing_visible_non_duplicate" : "maxSteps1_no_terminal_step"}`
       );
     } catch (e) {
       console.error("[EdgeClaw][delegate-finalize] Failed to append delegate success assistant message:", e);
+    }
+  }
+
+  /**
+   * Mirrors success-path delegate finalization for failure cases where `delegate_tool_task`
+   * returns detailed failure text but no visible assistant text is emitted in the chat UI.
+   */
+  private async maybeInjectDelegateToolTaskFailureAssistantMessage(
+    result: ChatResponseResult
+  ): Promise<void> {
+    const replyText = this._turnToolAgentDelegateFailureExactReply.trim();
+    const existingText = voiceExtractTextFromUiMessage(result.message).trim();
+    const injectResult = shouldInjectVisibleAssistantMessage({
+      resultMessageText: existingText,
+      replyText,
+      latch: this._turnToolAgentDelegateFailureAssistantInsertedOk,
+      shouldInject: this._turnToolAgentDelegationFailed,
+    });
+    if (!injectResult.shouldInject) {
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = true;
+      console.log(
+        `[EdgeClaw][delegate-finalize] injectedVisibleAssistantMessage=no reason=${injectResult.reason}`
+      );
+      return;
+    }
+    try {
+      const think = this as unknown as {
+        session: { appendMessage: (m: UIMessage) => Promise<void> };
+        _broadcastMessages?: () => void;
+      };
+      const msg: UIMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        parts: [{ type: "text", text: replyText }],
+      };
+      await think.session.appendMessage(msg);
+      think._broadcastMessages?.();
+      this._turnToolAgentDelegateFailureAssistantInsertedOk = true;
+      console.log(
+        `[EdgeClaw][delegate-finalize] resultTextLength=${replyText.length} injectedVisibleAssistantMessage=yes reason=maxSteps1_no_terminal_step_failure`
+      );
+    } catch (e) {
+      console.error("[EdgeClaw][delegate-finalize] Failed to append delegate failure assistant message:", e);
     }
   }
 
@@ -4384,6 +4848,7 @@ export class MainAgent extends BaseThinkWithVoice {
     );
 
     await this.maybeInjectCodemodeFailureFallbackAssistantMessage(result);
+    await this.maybeInjectDelegateToolTaskFailureAssistantMessage(result);
     await this.maybeInjectDelegateToolTaskSuccessAssistantMessage(result);
     await this.maybeInjectCodemodeApiStopAssistantMessage(result);
     this.maybeEmitCodemodeApiStopEndOfTurnTelemetry();
@@ -4893,6 +5358,8 @@ export class MainAgent extends BaseThinkWithVoice {
   async rpcExecuteDelegatedMcpTool(payload: {
     toolName: string;
     input: unknown;
+    delegatedTaskText?: string;
+    delegationCorrelationId?: string;
   }): Promise<{ ok: boolean; resultWire?: string; result?: unknown; error?: string }> {
     let diagToolTag = "(unset)";
     /** Updated throughout the callable body — surfaced as `exit:<diagPhase>` (no payloads). */
@@ -4909,7 +5376,7 @@ export class MainAgent extends BaseThinkWithVoice {
         payload !== null &&
         typeof payload === "object" &&
         !Array.isArray(payload)
-          ? (payload as { toolName?: unknown; input?: unknown })
+          ? (payload as { toolName?: unknown; input?: unknown; delegatedTaskText?: unknown; delegationCorrelationId?: unknown })
           : undefined;
 
       const toolName =
@@ -4922,6 +5389,14 @@ export class MainAgent extends BaseThinkWithVoice {
       diagPhase = "after_tool_identity";
 
       const delegatedInput = payloadPlain !== undefined ? payloadPlain.input : undefined;
+      const delegatedTaskText =
+        payloadPlain !== undefined && typeof payloadPlain.delegatedTaskText === "string"
+          ? payloadPlain.delegatedTaskText
+          : "";
+      const delegationCorrelationId =
+        payloadPlain !== undefined && typeof payloadPlain.delegationCorrelationId === "string"
+          ? payloadPlain.delegationCorrelationId.trim()
+          : "";
       const dbg = isCodemodeWireDebugEnabled();
 
       const payloadShape =
@@ -4980,10 +5455,49 @@ export class MainAgent extends BaseThinkWithVoice {
         });
       }
 
+      const toolDescription = getToolEntryDescription(def);
+      const toolSchema = getToolEntrySchema(def);
+      const latestUserText = this.extractLatestUserMessageText(this.getMessages() as unknown[]);
+      const explicitTaskText = this.resolveDelegatedTaskTextForHostBoundary({
+        correlationId: delegationCorrelationId,
+        payloadDelegatedTaskText: delegatedTaskText,
+        latestUserText,
+      });
+      const resolvedInput = resolveRequiredToolInputsForHostBoundary({
+        toolName,
+        delegatedInput,
+        toolDescription,
+        toolSchema,
+        explicitTaskText,
+        configuredContext: resolveConfiguredToolInputsForRouter(this.env),
+      });
+      if (!resolvedInput.ok) {
+        diagPhase = "return_required_input_conflict";
+        return rpcDelegatedStubPlainEnvelope({
+          ok: false,
+          error: resolvedInput.error,
+        });
+      }
+
+      const delegatedInputWithInjection = resolvedInput.injectedInput;
+
+      // Log sanitized native input keys before execution for boundary visibility.
+      if (delegatedInputWithInjection && typeof delegatedInputWithInjection === "object" && !Array.isArray(delegatedInputWithInjection)) {
+        const inputKeys = Object.keys(delegatedInputWithInjection as Record<string, unknown>)
+          .filter(k => k.length < 100)  // Avoid logging secret-like long keys
+          .join(",");
+        const hasAccountId = (delegatedInputWithInjection as Record<string, unknown>)["account_id"] !== undefined;
+        if (dbg) {
+          console.log(
+            `[EdgeClaw][mcp-native-exec-input] tool=${toolName} keys=${inputKeys || "none"} hasAccountId=${hasAccountId ? "yes" : "no"}`
+          );
+        }
+      }
+
       let raw: unknown;
       diagPhase = "mcp_execute_await_enter";
       try {
-        raw = await exec(delegatedInput);
+        raw = await exec(delegatedInputWithInjection);
         diagPhase = "mcp_execute_await_done";
       } catch (execErr) {
         diagPhase = "return_execute_catch";
@@ -5451,6 +5965,8 @@ export class MainAgent extends BaseThinkWithVoice {
           servers: PersistedMcpServer[];
           oauthCallbackHost?: string;
           delegatedParentAgentName?: string;
+          delegatedTaskText?: string;
+          delegationCorrelationId?: string;
           mcpMirrorToolDescriptors?: Record<string, McpMirrorToolDescriptor>;
         }): Promise<{ ok: boolean; error?: string }>;
       }>;
@@ -5462,6 +5978,8 @@ export class MainAgent extends BaseThinkWithVoice {
     );
 
     const safeMessage = truncateMessageForSubagentRpcInbound(message);
+    const delegationCorrelationId = `tool-agent-${this.requestId}-${Date.now().toString(36)}`;
+    this.rememberDelegatedTaskTextForCorrelation(delegationCorrelationId, safeMessage);
 
     const { resolveMcpOAuthCallbackHostForToolAgentDelegation } = await import(
       "../lib/mcpOAuthCallbackHost"
@@ -5495,6 +6013,8 @@ export class MainAgent extends BaseThinkWithVoice {
               servers: mergedServers,
               oauthCallbackHost,
               delegatedParentAgentName: this.name,
+              delegatedTaskText: safeMessage,
+              delegationCorrelationId,
               mcpMirrorToolDescriptors,
             });
             if (

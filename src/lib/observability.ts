@@ -309,3 +309,17 @@ function eventMinLevel(eventName: ObsEvent["event"]): ObsLevel {
 function defaultConsoleSink(event: ObsEvent): void {
   console.log(`[EdgeClaw:obs] ${JSON.stringify(event)}`);
 }
+
+// Add structured logs for MCP API execution summary
+export function logMcpApiSummary(requestId: string, method: string, operationPathTemplate: string, matchedCount: number, scannedCount: number, returnedFields: string[]): void {
+  console.log("[EdgeClaw][tool-agent-mcp-api-summary]", {
+    requestId,
+    method,
+    operationPathTemplate,
+    mutation: false,
+    detailById: false,
+    matchedCount,
+    scannedCount,
+    returnedFields,
+  });
+}

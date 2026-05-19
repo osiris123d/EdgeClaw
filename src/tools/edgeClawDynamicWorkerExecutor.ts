@@ -16,18 +16,21 @@ import {
   codemodeWireStringifyToolResult,
   toCodemodeWireSerializable,
 } from "./codemodeRouterHelpers";
-import { runCodemodeRouterInvocation } from "./codemodeRouterInvocation";
+import { runCodemodeRouterInvocation, tryGetCodemodeRouterInvocationStore, enterCodemodeRouterInvocationStore } from "./codemodeRouterInvocation";
 
 type SandboxToolFn = (...args: unknown[]) => Promise<unknown>;
 
 export class EdgeClawToolDispatcher extends RpcTarget {
   readonly #fns: Record<string, SandboxToolFn>;
   readonly #positionalArgs: boolean;
+  /** Captured at construction so RPC callbacks from the sandbox re-enter the same ALS context. */
+  readonly #capturedInvocationStore: import("./codemodeRouterInvocation").CodemodeRouterInvocationStore | undefined;
 
   constructor(sanitizedFns: Record<string, SandboxToolFn>, positionalArgs = false) {
     super();
     this.#fns = sanitizedFns;
     this.#positionalArgs = positionalArgs;
+    this.#capturedInvocationStore = tryGetCodemodeRouterInvocationStore();
 
     for (const name of Object.keys(sanitizedFns)) {
       if (this.#positionalArgs) {
@@ -68,6 +71,9 @@ export class EdgeClawToolDispatcher extends RpcTarget {
         error: `Tool "${name}" not found`,
       });
     }
+    // Re-enter the captured ALS context so tool handlers see the same
+    // invocation store that was active when the codemode execution started.
+    return enterCodemodeRouterInvocationStore(this.#capturedInvocationStore, async () => {
     try {
       if (this.#positionalArgs) {
         const args = argsJson ? JSON.parse(argsJson) : [];
@@ -83,6 +89,7 @@ export class EdgeClawToolDispatcher extends RpcTarget {
         tool: name,
       });
     }
+    });
   }
 }
 
@@ -115,7 +122,7 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
     code: string,
     providersOrFns: ResolvedProvider[] | Record<string, SandboxToolFn>
   ): Promise<ExecuteResult> {
-    return runCodemodeRouterInvocation(() => this.performExecute(code, providersOrFns));
+    return this.performExecute(code, providersOrFns);
   }
 
   private async performExecute(
@@ -154,6 +161,13 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
       seenNames.add(provider.name);
     }
 
+    const providerSanitizedToolNames: Record<string, string[]> = {};
+    for (const provider of providers) {
+      providerSanitizedToolNames[provider.name] = Object.keys(provider.fns)
+        .map((name) => sanitizeToolName(name))
+        .sort();
+    }
+
     const executorModule = [
       `import { WorkerEntrypoint } from "cloudflare:workers";`,
       "",
@@ -164,11 +178,13 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
       `    console.warn = (...a) => { __logs.push("[warn] " + a.map(String).join(" ")); };`,
       `    console.error = (...a) => { __logs.push("[error] " + a.map(String).join(" ")); };`,
       ...providers.map((p) => {
+        const toolNamesJson = JSON.stringify(providerSanitizedToolNames[p.name] ?? []);
         if (p.positionalArgs) {
-          return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (...args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args));\n        const data = JSON.parse(resJson);\n        return data.result;\n      }\n    });`;
+          return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (...args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args));\n        const data = JSON.parse(resJson);\n        return data.result;\n      },\n      ownKeys: () => ${toolNamesJson}.slice(),\n      getOwnPropertyDescriptor: (_, key) => {\n        if (typeof key !== "string") return undefined;\n        if (!${toolNamesJson}.includes(key)) return undefined;\n        return { enumerable: true, configurable: true };\n      }\n    });`;
         }
-        return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args ?? {}));\n        const data = JSON.parse(resJson);\n        return data.result;\n      }\n    });`;
+        return `    const ${p.name} = new Proxy({}, {\n      get: (_, toolName) => async (args) => {\n        const resJson = await __dispatchers.${p.name}.call(String(toolName), JSON.stringify(args ?? {}));\n        const data = JSON.parse(resJson);\n        return data.result;\n      },\n      ownKeys: () => ${toolNamesJson}.slice(),\n      getOwnPropertyDescriptor: (_, key) => {\n        if (typeof key !== "string") return undefined;\n        if (!${toolNamesJson}.includes(key)) return undefined;\n        return { enumerable: true, configurable: true };\n      }\n    });`;
       }),
+      ...(providers.some((p) => p.name === "codemode") ? [`    const cm = codemode;`] : []),
       "",
       `    try {`,
       `      const result = await Promise.race([`,
@@ -185,37 +201,41 @@ export class EdgeClawDynamicWorkerExecutor implements Executor {
       `}`,
     ].join("\n");
 
-    const dispatchers: Record<string, EdgeClawToolDispatcher> = {};
-    for (const provider of providers) {
-      const sanitizedFns: Record<string, SandboxToolFn> = {};
-      for (const [name, fn] of Object.entries(provider.fns)) {
-        sanitizedFns[sanitizeToolName(name)] = fn as SandboxToolFn;
-      }
-      dispatchers[provider.name] = new EdgeClawToolDispatcher(
-        sanitizedFns,
-        Boolean(provider.positionalArgs)
-      );
-    }
-
     const loader = this.#loader as unknown as {
       get(name: string, init: () => Record<string, unknown>): {
         getEntrypoint(): { evaluate(dispatchersArg: Record<string, EdgeClawToolDispatcher>): Promise<unknown> };
       };
     };
 
-    const responseUnknown = await loader
-      .get(`codemode-${crypto.randomUUID()}`, () => ({
-      compatibilityDate: "2025-06-01",
-      compatibilityFlags: ["nodejs_compat"],
-      mainModule: "executor.js",
-      modules: {
-        ...this.#modules,
-        "executor.js": executorModule,
-      },
-      globalOutbound: this.#globalOutbound,
-    }))
-      .getEntrypoint()
-      .evaluate(dispatchers);
+    const responseUnknown = await runCodemodeRouterInvocation(async () => {
+      // Build dispatchers INSIDE the ALS context so each one captures the
+      // invocation store created by runCodemodeRouterInvocation.
+      const dispatchers: Record<string, EdgeClawToolDispatcher> = {};
+      for (const provider of providers) {
+        const sanitizedFns: Record<string, SandboxToolFn> = {};
+        for (const [name, fn] of Object.entries(provider.fns)) {
+          sanitizedFns[sanitizeToolName(name)] = fn as SandboxToolFn;
+        }
+        dispatchers[provider.name] = new EdgeClawToolDispatcher(
+          sanitizedFns,
+          Boolean(provider.positionalArgs)
+        );
+      }
+
+      return loader
+        .get(`codemode-${crypto.randomUUID()}`, () => ({
+          compatibilityDate: "2025-06-01",
+          compatibilityFlags: ["nodejs_compat"],
+          mainModule: "executor.js",
+          modules: {
+            ...this.#modules,
+            "executor.js": executorModule,
+          },
+          globalOutbound: this.#globalOutbound,
+        }))
+        .getEntrypoint()
+        .evaluate(dispatchers);
+    });
 
     const response = responseUnknown as {
       result?: unknown;

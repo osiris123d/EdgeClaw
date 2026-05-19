@@ -254,6 +254,11 @@ export interface Variables {
    */
   ENABLE_MAIN_TOOL_SURFACE_REDUCTION?: string;
   /**
+   * Legacy fallback gate: force model-mediated `delegate_tool_task` call.
+   * Default false keeps ToolAgent delegation deterministic in server code.
+   */
+  ENABLE_MODEL_MEDIATED_DELEGATE_GATE?: string;
+  /**
    * Max milliseconds MainAgent awaits ToolAgent `rpcCollectChatTurn` for `delegate_tool_task`
    * (default 600000). Bounded to 10000–3600000 when set.
    */
@@ -342,6 +347,8 @@ export interface Env
    * MCP / Codemode / legacy `execute` from the LLM — use ToolAgent for heavy tool orchestration.
    */
   ENABLE_MAIN_TOOL_SURFACE_REDUCTION?: string;
+  /** @see Variables.ENABLE_MODEL_MEDIATED_DELEGATE_GATE */
+  ENABLE_MODEL_MEDIATED_DELEGATE_GATE?: string;
   /** @see Variables.TOOL_AGENT_DELEGATION_TIMEOUT_MS */
   TOOL_AGENT_DELEGATION_TIMEOUT_MS?: string;
   SUBAGENT_REPRO_TOKEN?: string;
@@ -401,6 +408,8 @@ export interface RuntimeFeatureFlags {
   enableToolAgentDelegation: boolean;
   /** Narrow MainAgent visible tools (requires ToolAgent delegation). */
   enableMainToolSurfaceReduction: boolean;
+  /** Legacy fallback: rely on provider-forced delegate_tool_task tool call. */
+  enableModelMediatedDelegateGate: boolean;
 }
 
 export interface RuntimeConfig {
@@ -469,6 +478,10 @@ export function getRuntimeConfig(env: Env): RuntimeConfig {
       ),
       enableMainToolSurfaceReduction: parseBooleanFlag(
         getVar(env, "ENABLE_MAIN_TOOL_SURFACE_REDUCTION"),
+        false
+      ),
+      enableModelMediatedDelegateGate: parseBooleanFlag(
+        getVar(env, "ENABLE_MODEL_MEDIATED_DELEGATE_GATE"),
         false
       ),
     },

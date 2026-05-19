@@ -59,6 +59,23 @@ import type { StreamCallback as ThinkStreamCallback } from "@cloudflare/think";
 import type { ToolSet } from "ai";
 import { RpcTarget } from "cloudflare:workers";
 
+const TOOL_AGENT_FAILURE_TYPES: Set<ToolAgentFailureDetail["type"]> = new Set([
+  "conflicting_tool_input",
+  "auth_error",
+  "permission_error",
+  "too_much_data",
+  "large_result",
+  "missing_tool_input",
+  "wrong_tool_api",
+  "invalid_tool_input",
+  "invalid_tool_context",
+  "non_retryable",
+  "tool_error",
+  "timeout",
+  "empty_result",
+  "unknown",
+]);
+
 // ── Public Types ─────────────────────────────────────────────────────────────
 
 /**
@@ -129,6 +146,53 @@ export interface SubAgentResult {
   ok: boolean;
   /** Error message if `ok` is false. */
   error?: string;
+  /** Normalized ToolAgent envelope for delegated tool orchestration outcomes. */
+  toolAgentResult?: ToolAgentResultEnvelope;
+}
+
+export interface ToolAgentFailureDetail {
+  type:
+    | "conflicting_tool_input"
+    | "auth_error"
+    | "permission_error"
+    | "too_much_data"
+    | "large_result"
+    | "missing_tool_input"
+    | "wrong_tool_api"
+    | "invalid_tool_input"
+    | "invalid_tool_context"
+    | "non_retryable"
+    | "tool_error"
+    | "timeout"
+    | "empty_result"
+    | "unknown";
+  where?: string;
+  /** Optional normalized semantic key for deterministic downstream handling. */
+  semanticKey?: string;
+  /** Canonical what-failed field for envelope consumers. */
+  whatFailed?: string;
+  summary: string;
+  evidence?: string;
+  suggestedFix?: string;
+  suggestedRetryPrompt?: string;
+}
+
+export interface ToolAgentResultEnvelope {
+  ok: boolean;
+  resultText?: string;
+  failure?: ToolAgentFailureDetail;
+  rawToolErrorPreview?: string;
+  partialResultText?: string;
+  /** Number of items/records scanned during paginated extraction. */
+  scannedCount?: number;
+  /** Number of items/records matched after compact extraction filters. */
+  matchedCount?: number;
+  /** Compact matched records preserved for caller-side rendering. */
+  matched?: unknown[];
+  /** Pointer to stored artifact or shared workspace key where full findings are saved. */
+  artifactPointer?: string;
+  /** Retry prompt for the caller when extraction was partial or failed. */
+  suggestedRetryPrompt?: string;
 }
 
 /**
@@ -155,11 +219,85 @@ export function clampSubAgentResultForRpc(r: SubAgentResult): SubAgentResult {
         ? `${r.error.slice(0, maxErr)}…`
         : r.error
       : undefined;
+
+  const truncateField = (value: unknown, max: number): string | undefined => {
+    if (typeof value !== "string") return undefined;
+    if (!value) return undefined;
+    return value.length > max ? `${value.slice(0, max)}…` : value;
+  };
+
+  const toolAgentResultRaw =
+    r.toolAgentResult && typeof r.toolAgentResult === "object" ? r.toolAgentResult : undefined;
+  const toolAgentResult = toolAgentResultRaw
+    ? {
+        ok: Boolean(toolAgentResultRaw.ok),
+        ...(truncateField(toolAgentResultRaw.resultText, MAX_SUBAGENT_RPC_TEXT_CHARS) !== undefined
+          ? { resultText: truncateField(toolAgentResultRaw.resultText, MAX_SUBAGENT_RPC_TEXT_CHARS)! }
+          : {}),
+        ...(truncateField(toolAgentResultRaw.rawToolErrorPreview, 8_000) !== undefined
+          ? { rawToolErrorPreview: truncateField(toolAgentResultRaw.rawToolErrorPreview, 8_000)! }
+          : {}),
+        ...(truncateField(toolAgentResultRaw.partialResultText, MAX_SUBAGENT_RPC_TEXT_CHARS) !== undefined
+          ? { partialResultText: truncateField(toolAgentResultRaw.partialResultText, MAX_SUBAGENT_RPC_TEXT_CHARS)! }
+          : {}),
+        ...(toolAgentResultRaw.failure && typeof toolAgentResultRaw.failure === "object"
+          ? {
+              failure: {
+                type:
+                  typeof toolAgentResultRaw.failure.type === "string" &&
+                  TOOL_AGENT_FAILURE_TYPES.has(
+                    toolAgentResultRaw.failure.type as ToolAgentFailureDetail["type"]
+                  )
+                    ? (toolAgentResultRaw.failure.type as ToolAgentFailureDetail["type"])
+                    : "unknown",
+                ...(truncateField(toolAgentResultRaw.failure.where, 240) !== undefined
+                  ? { where: truncateField(toolAgentResultRaw.failure.where, 240)! }
+                  : {}),
+                summary:
+                  truncateField(toolAgentResultRaw.failure.summary, 2_000) ??
+                  "ToolAgent reported an unknown failure.",
+                ...(truncateField(toolAgentResultRaw.failure.evidence, 8_000) !== undefined
+                  ? { evidence: truncateField(toolAgentResultRaw.failure.evidence, 8_000)! }
+                  : {}),
+                ...(truncateField(toolAgentResultRaw.failure.suggestedFix, 2_000) !== undefined
+                  ? { suggestedFix: truncateField(toolAgentResultRaw.failure.suggestedFix, 2_000)! }
+                  : {}),
+                ...(truncateField(toolAgentResultRaw.failure.suggestedRetryPrompt, 8_000) !== undefined
+                  ? {
+                      suggestedRetryPrompt: truncateField(
+                        toolAgentResultRaw.failure.suggestedRetryPrompt,
+                        8_000
+                      )!,
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+        // Preserve extraction metadata fields through RPC clamping.
+        ...(typeof toolAgentResultRaw.scannedCount === "number"
+          ? { scannedCount: toolAgentResultRaw.scannedCount }
+          : {}),
+        ...(typeof toolAgentResultRaw.matchedCount === "number"
+          ? { matchedCount: toolAgentResultRaw.matchedCount }
+          : {}),
+        ...(Array.isArray(toolAgentResultRaw.matched)
+          ? { matched: toolAgentResultRaw.matched.slice(0, 200) }
+          : {}),
+        ...(truncateField(toolAgentResultRaw.artifactPointer, 2_000) !== undefined
+          ? { artifactPointer: truncateField(toolAgentResultRaw.artifactPointer, 2_000)! }
+          : {}),
+        ...(truncateField(toolAgentResultRaw.suggestedRetryPrompt, 8_000) !== undefined
+          ? { suggestedRetryPrompt: truncateField(toolAgentResultRaw.suggestedRetryPrompt, 8_000)! }
+          : {}),
+      }
+    : undefined;
+
   return {
     text,
     events: evOut,
     ok: r.ok,
     ...(err !== undefined ? { error: err } : {}),
+    ...(toolAgentResult !== undefined ? { toolAgentResult } : {}),
   };
 }
 

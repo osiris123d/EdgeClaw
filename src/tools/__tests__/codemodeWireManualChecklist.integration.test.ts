@@ -90,29 +90,46 @@ test("checklist: cloudflare_request returns Cloudflare-style envelope when execu
     tool_WB0fsUJK_search: tool({
       description: "Search the Cloudflare OpenAPI specification",
       inputSchema: z.object({ code: z.string().optional() }),
-      execute: async (): Promise<unknown> =>
-        mcpTextJson([{ method: "GET", path: "/accounts/{account_id}/zones" }], new DurableObjectStub()),
+      execute: async (input: { code?: string }): Promise<unknown> => {
+        if (typeof input?.code === "string" && input.code.includes("EDGECLAW_OPENAPI_DESCRIBE")) {
+          return mcpTextJson(
+            {
+              ok: true,
+              operation: { parameters: [{ name: "account_id", in: "path", required: true }] },
+            },
+            new DurableObjectStub()
+          );
+        }
+        return mcpTextJson([{ method: "GET", path: "/accounts/{account_id}/zones" }], new DurableObjectStub());
+      },
     }),
     tool_WB0fsUJK_execute: tool({
       description: "Execute Cloudflare API JavaScript",
       inputSchema: z.object({ code: z.string().optional() }),
-      execute: async (): Promise<unknown> =>
-        mcpTextJson(
+      execute: async (): Promise<unknown> => {
+        return mcpTextJson(
           {
             success: true,
             result: { zones: [{ id: "zone1", name: "example.com" }] },
           },
           new RpcTarget()
-        ),
+        );
+      },
     }),
   };
   const meta = createCodemodeRelayMetaToolSet({ relay, cloudflareAccountId: ACCOUNT_ID });
 
   await runCodemodeRouterInvocation(async () => {
     await execTool(meta, "openapi_search", { pathIncludes: "zones" });
+    await execTool(meta, "openapi_describe_operation", {
+      method: "GET",
+      path: "/accounts/{account_id}/zones",
+    });
     const out = (await execTool(meta, "cloudflare_request", {
       method: "GET",
       path: "/accounts/{account_id}/zones",
+      operationPathTemplate: "/accounts/{account_id}/zones",
+      knownValues: { account_id: ACCOUNT_ID },
     })) as { ok?: boolean; result?: { zones?: Array<{ id?: string }> }; error?: string };
     assert.equal(out.ok, true, JSON.stringify(out));
     assert.equal(out.result?.zones?.[0]?.id, "zone1");

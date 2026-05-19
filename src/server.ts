@@ -107,6 +107,37 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+function summarizeAgentRouteRequest(request: Request): Record<string, unknown> {
+  const url = new URL(request.url);
+  const upgrade = (request.headers.get("Upgrade") ?? "").toLowerCase();
+  return {
+    method: request.method,
+    path: url.pathname,
+    hasPk: url.searchParams.has("_pk"),
+    isWebSocketUpgrade: upgrade === "websocket",
+    cfRay: request.headers.get("cf-ray") ?? undefined,
+    userAgent: request.headers.get("user-agent") ?? undefined,
+    origin: request.headers.get("origin") ?? undefined,
+    secWebSocketVersion: request.headers.get("sec-websocket-version") ?? undefined,
+    secWebSocketExtensions: request.headers.get("sec-websocket-extensions") ?? undefined,
+  };
+}
+
+function normalizeUnknownError(e: unknown): { name: string; message: string; stack?: string } {
+  if (e instanceof Error) {
+    return {
+      name: e.name,
+      message: e.message,
+      stack: typeof e.stack === "string" ? e.stack : undefined,
+    };
+  }
+  try {
+    return { name: "NonError", message: JSON.stringify(e) };
+  } catch {
+    return { name: "NonError", message: String(e) };
+  }
+}
+
 async function serveStaticAsset(request: Request, env: Env): Promise<Response | null> {
   if (!env.ASSETS) return null;
   if (request.method !== "GET" && request.method !== "HEAD") return null;
@@ -140,6 +171,38 @@ const MAX_AGENT_NAME_LENGTH = 128;
 const MAX_METADATA_KEYS = 20;
 /** Maximum byte length for a single metadata key or value. */
 const MAX_METADATA_VALUE_LENGTH = 512;
+/** Header used for authenticated webhook trigger automation. */
+const WEBHOOK_TRIGGER_TOKEN_HEADER = "X-EdgeClaw-Webhook-Token";
+
+function secureEqualsConstantTime(left: string, right: string): boolean {
+  const leftLen = left.length;
+  const rightLen = right.length;
+  let mismatch = leftLen ^ rightLen;
+  const maxLen = leftLen > rightLen ? leftLen : rightLen;
+  for (let i = 0; i < maxLen; i += 1) {
+    const l = i < leftLen ? left.charCodeAt(i) : 0;
+    const r = i < rightLen ? right.charCodeAt(i) : 0;
+    mismatch |= l ^ r;
+  }
+  return mismatch === 0;
+}
+
+function resolveExpectedWebhookTriggerToken(env: Env): string {
+  const directToken = (env as Env & { EDGECLAW_WEBHOOK_TOKEN?: string }).EDGECLAW_WEBHOOK_TOKEN?.trim();
+  const varsToken = (
+    env as Env & { Variables?: Record<string, string | undefined> }
+  ).Variables?.EDGECLAW_WEBHOOK_TOKEN?.trim();
+  return directToken || varsToken || "";
+}
+
+function verifyWebhookTriggerAutomationToken(request: Request, env: Env): Response | null {
+  const expectedToken = resolveExpectedWebhookTriggerToken(env);
+  const providedToken = request.headers.get(WEBHOOK_TRIGGER_TOKEN_HEADER)?.trim() || "";
+  if (!expectedToken || !providedToken || !secureEqualsConstantTime(providedToken, expectedToken)) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+  return null;
+}
 
 async function parseWebhookPayload(request: Request): Promise<WebhookPayload | Response> {
   // Require JSON content type to prevent CSRF-style cross-origin form submissions.
@@ -466,6 +529,7 @@ async function forwardToAgentMcp(
   env: Env,
   url: URL
 ): Promise<Response> {
+  const traceId = crypto.randomUUID();
   const session = url.searchParams.get("session") ?? "default";
 
   if (session.length > 128 || !/^[a-zA-Z0-9_.-]+$/.test(session)) {
@@ -494,7 +558,70 @@ async function forwardToAgentMcp(
         headers: request.headers,
       });
 
-  return stub.fetch(doRequest);
+  const startedAt = Date.now();
+  console.info("[EdgeClaw][mcp-forward] begin", {
+    traceId,
+    method: request.method,
+    inboundPath: url.pathname,
+    doPath: doUrl.pathname,
+    session,
+    hasBody,
+    cfRay: request.headers.get("cf-ray") ?? undefined,
+  });
+
+  try {
+    const response = await stub.fetch(doRequest);
+    const elapsedMs = Date.now() - startedAt;
+    const status = response.status;
+
+    console.info("[EdgeClaw][mcp-forward] end", {
+      traceId,
+      status,
+      elapsedMs,
+      contentType: response.headers.get("content-type") ?? undefined,
+      contentLength: response.headers.get("content-length") ?? undefined,
+    });
+
+    if (status >= 500) {
+      let preview: string | undefined;
+      try {
+        preview = (await response.clone().text()).slice(0, 1500);
+      } catch {
+        preview = undefined;
+      }
+      console.error("[EdgeClaw][mcp-forward] do-5xx", {
+        traceId,
+        status,
+        elapsedMs,
+        bodyPreview: preview,
+      });
+    }
+
+    const out = new Response(response.body, response);
+    out.headers.set("x-edgeclaw-mcp-trace-id", traceId);
+    return out;
+  } catch (e) {
+    const elapsedMs = Date.now() - startedAt;
+    const normalized = normalizeUnknownError(e);
+    console.error("[EdgeClaw][mcp-forward] throw", {
+      traceId,
+      elapsedMs,
+      method: request.method,
+      inboundPath: url.pathname,
+      doPath: doUrl.pathname,
+      session,
+      cfRay: request.headers.get("cf-ray") ?? undefined,
+      error: normalized,
+    });
+
+    return json(
+      {
+        error: "mcp_forward_internal_error",
+        traceId,
+      },
+      503
+    );
+  }
 }
 
 async function dispatchTurn(
@@ -557,7 +684,39 @@ export default {
     syncCodemodeWireDebugFromEnv(env);
 
     // 1. Let the Agents SDK route agent/WebSocket traffic first.
-    const routed = await routeAgentRequest(request, env);
+    const routeAttemptId = crypto.randomUUID();
+    let routed: Response | null;
+    try {
+      routed = await routeAgentRequest(request, env);
+    } catch (e) {
+      const normalized = normalizeUnknownError(e);
+      console.error("[EdgeClaw][agent-route] routeAgentRequest threw", {
+        routeAttemptId,
+        request: summarizeAgentRouteRequest(request),
+        error: normalized,
+      });
+      return json(
+        {
+          error: "agent_route_internal_error",
+          routeAttemptId,
+        },
+        503
+      );
+    }
+
+    if (routed) {
+      const url = new URL(request.url);
+      if (url.pathname.startsWith("/agents/")) {
+        const status = routed.status;
+        if (status >= 500) {
+          console.error("[EdgeClaw][agent-route] routed 5xx", {
+            routeAttemptId,
+            status,
+            request: summarizeAgentRouteRequest(request),
+          });
+        }
+      }
+    }
     if (routed) return routed;
 
     const url = new URL(request.url);
@@ -716,6 +875,8 @@ export default {
 
     // 3. Inbound webhook — inject a user message into a named agent DO instance.
     if (pathname === "/webhook/trigger" && request.method === "POST") {
+      const tokenError = verifyWebhookTriggerAutomationToken(request, env);
+      if (tokenError) return tokenError;
       const payloadOrError = await parseWebhookPayload(request);
       if (payloadOrError instanceof Response) return payloadOrError;
       return dispatchTurn(env, payloadOrError);

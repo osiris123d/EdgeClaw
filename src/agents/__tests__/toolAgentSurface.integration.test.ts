@@ -67,6 +67,11 @@ test("ToolAgentThinkFacet defines MCP sync RPC for MainAgent delegation mirror",
   assert.match(src, /\bbuildMcpLiveMirrorToolSet\b/);
   assert.match(src, /codemodeSurface=ready wrappedToolCount=/);
   assert.match(src, /codemodeSurface=no_wrapped_search_tool/);
+  assert.match(src, /tool_agent_setup_failure:mcp_live_reuse_mirror_incomplete/);
+  assert.match(src, /tool_agent_setup_failure:codemode_surface_incomplete/);
+  assert.match(src, /if \(this\._mcpMirrorSetupFailure\)/, "pre-inference setup short-circuit");
+  assert.match(src, /buildToolAgentResultEnvelope\(\{[\s\S]*hadToolActivity: false/s, "setup short-circuit emits deterministic failure envelope");
+  assert.match(src, /findMissingMcpMirrorDescriptors/, "sync validates mirror descriptors for reuse rows");
   assert.match(src, /\bonChatRecovery\b/, "fiber recovery rehydrates / gates codemode mirror");
   assert.match(src, /edgeclaw_ta_mcp_mirror_v1/, "durable snapshot key for MCP mirror rehydration");
   assert.match(src, /mcpMirrorRehydrate/, "log marker when mirror rebuilt from storage");

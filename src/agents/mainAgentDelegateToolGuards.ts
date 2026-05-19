@@ -150,14 +150,30 @@ export function detectMcpToolApiDelegationIntent(text: string): McpToolApiDelega
 
   const hasMcpTrigger = mcpPhrases.some((re) => re.test(s));
   const hasApiTrigger = apiPhrases.some((re) => re.test(s));
-  if (!hasMcpTrigger && !hasApiTrigger) return NO_MATCH;
+
+  // Additional Cloudflare/OpenAPI route cues for API tasks that often omit explicit
+  // "use MCP" phrasing (for example: account_id + gateway/rules lookup requests).
+  // Intentionally does NOT match plain "read-only" by itself.
+  const hasRouteCueTrigger =
+    /\/accounts\/(?:\{account_id\}|[a-f0-9]{32})\//i.test(s) ||
+    (/\baccount[_\s-]?id\b/i.test(s) &&
+      (/\bgateway\s*\/\s*rules\b/i.test(s) || /\bgateway[_\s-]?rules\b/i.test(s)));
 
   // ── Step 2: require an action verb ────────────────────────────────────────
-  const actionVerbs = /\b(list|get|fetch|retrieve|query|search|inspect|describe|summarize|call|check|look\s+up|find|show|enumerate|pull|read|count|filter)\b/;
+  // Includes data-fetching verbs AND analysis/generation verbs, so requests like
+  // "use MCP to review policies and draft a script" still route to ToolAgent.
+  const actionVerbs = /\b(list|get|fetch|retrieve|query|search|inspect|describe|summarize|call|check|look\s+up|lookup|find|show|enumerate|pull|read|count|filter|review|analyze|analyse|audit|assess|inventory|compare|map|generate|create|draft|write|build)\b/;
   if (!actionVerbs.test(s)) return { ...NO_MATCH, reason: "no_action_verb" };
 
-  const taskKind: "mcp_api" | "tool_orchestration" = hasMcpTrigger || hasApiTrigger ? "mcp_api" : "tool_orchestration";
-  const triggerLabel = hasMcpTrigger ? "mcp_trigger" : "api_trigger";
+  if (!hasMcpTrigger && !hasApiTrigger && !hasRouteCueTrigger) return NO_MATCH;
+
+  const taskKind: "mcp_api" | "tool_orchestration" =
+    hasMcpTrigger || hasApiTrigger || hasRouteCueTrigger ? "mcp_api" : "tool_orchestration";
+  const triggerLabel = hasMcpTrigger
+    ? "mcp_trigger"
+    : hasApiTrigger
+      ? "api_trigger"
+      : "route_cue_trigger";
   return { matched: true, taskKind, reason: triggerLabel };
 }
 

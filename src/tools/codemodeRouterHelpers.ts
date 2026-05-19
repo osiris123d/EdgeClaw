@@ -114,7 +114,24 @@ export function buildOpenApiDescribeOperationInnerCode(args: { method: string; p
   if (!op || typeof op !== "object") {
     return { ok: false, error: "operation_not_found", operation: { method: methodUpper, path: tpl } };
   }
-  return { ok: true, operation: op };
+  // Return a compact summary only — omit deep response schemas which can exceed
+  // the tool output token limit and produce truncated, unparseable JSON.
+  const compact = {
+    summary: op.summary,
+    description: op.description,
+    tags: op.tags,
+    parameters: op.parameters,
+    requestBody: op.requestBody,
+    responses: op.responses
+      ? Object.fromEntries(
+          Object.entries(op.responses).map(([code, resp]) => [
+            code,
+            { description: resp && typeof resp === "object" ? resp.description : undefined },
+          ])
+        )
+      : undefined,
+  };
+  return { ok: true, operation: compact };
 }`;
 }
 
@@ -162,9 +179,24 @@ export function buildCloudflareRequestInnerCode(options: {
   path: string;
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
+  /** When provided, the sandbox applies reduction before the response crosses the wire. */
+  reduction?: {
+    select?: string[];
+    filterByPrefix?: {
+      field: string;
+      value?: string;
+      prefix?: string;
+      caseInsensitive?: boolean;
+      trim?: boolean;
+    };
+    compactResultCap?: number;
+  };
 }): string {
-  const payload = JSON.stringify(options);
-  return `async () => {
+  const { reduction, ...rest } = options;
+  const payload = JSON.stringify(rest);
+
+  if (!reduction) {
+    return `async () => {
   const o = ${payload};
   return cloudflare.request({
     method: o.method,
@@ -172,6 +204,70 @@ export function buildCloudflareRequestInnerCode(options: {
     ...(o.query && Object.keys(o.query).length ? { query: o.query } : {}),
     ...(o.body !== undefined ? { body: o.body } : {}),
   });
+}`;
+  }
+
+  // Inline the reduction plan so it runs inside the sandbox.
+  // The response crosses the wire as a compact object instead of the full API payload.
+  const reductionJson = JSON.stringify(reduction);
+  return `async () => {
+  const o = ${payload};
+  const _r = ${reductionJson};
+  const raw = await cloudflare.request({
+    method: o.method,
+    path: o.path,
+    ...(o.query && Object.keys(o.query).length ? { query: o.query } : {}),
+    ...(o.body !== undefined ? { body: o.body } : {}),
+  });
+  // Parse raw if it is a JSON string (provider may double-encode).
+  let data = raw;
+  if (typeof data === "string") { try { data = JSON.parse(data); } catch {} }
+  if (typeof data === "string") { try { data = JSON.parse(data); } catch {} }
+  if (!data || typeof data !== "object") return { _reduced: true, items: [], scannedCount: 0, matchedCount: 0 };
+  // Unwrap Cloudflare envelope.
+  const rec = data;
+  if (typeof rec.success === "boolean" && rec.success === false) {
+    return { _reduced: true, _apiError: true, errors: rec.errors };
+  }
+  const payload2 = rec.result !== undefined ? rec.result : data;
+  // Extract result_info for pagination.
+  const resultInfo = rec.result_info || undefined;
+  // Find the collection array.
+  let items = [];
+  if (Array.isArray(payload2)) { items = payload2; }
+  else if (payload2 && typeof payload2 === "object") {
+    for (const k of ["result","results","items","data","records","entries","objects"]) {
+      if (Array.isArray(payload2[k])) { items = payload2[k]; break; }
+    }
+  }
+  if (!items.length) return { _reduced: true, items: [], scannedCount: 0, matchedCount: 0, resultInfo };
+  // Apply reduction.
+  const sel = Array.isArray(_r.select) && _r.select.length > 0 ? _r.select : null;
+  const pfx = _r.filterByPrefix;
+  const pfxVal = pfx ? (pfx.value || pfx.prefix || "") : "";
+  const cap = _r.compactResultCap || 50;
+  const matched = [];
+  let scannedCount = 0;
+  let matchedCount = 0;
+  for (const it of items) {
+    scannedCount++;
+    if (!it || typeof it !== "object") continue;
+    if (pfx && pfxVal) {
+      let fv = it[pfx.field];
+      if (typeof fv !== "string") continue;
+      if (pfx.trim) fv = fv.trim();
+      const lhs = pfx.caseInsensitive ? fv.toLowerCase() : fv;
+      const rhs = pfx.caseInsensitive ? pfxVal.toLowerCase() : pfxVal;
+      if (!lhs.startsWith(rhs)) continue;
+    }
+    const row = {};
+    const keys = sel || Object.keys(it).slice(0, 8);
+    for (const k of keys) { if (k in it) row[k] = it[k]; }
+    if (!Object.keys(row).length) continue;
+    matchedCount++;
+    if (matched.length < cap) matched.push(row);
+  }
+  return { _reduced: true, items: matched, scannedCount, matchedCount, resultInfo };
 }`;
 }
 
@@ -355,7 +451,9 @@ export function toCodemodeWireSerializable(value: unknown): unknown {
     }
 
     if (Array.isArray(v)) {
-      return v.map((x, i) => walk(x, `${path}[${i}]`));
+      const arr = v.map((x, i) => walk(x, `${path}[${i}]`));
+      seen.delete(v as object);
+      return arr;
     }
 
     const proto = Object.getPrototypeOf(v);
@@ -391,6 +489,7 @@ export function toCodemodeWireSerializable(value: unknown): unknown {
         out[k] = "[Unserializable]";
       }
     }
+    seen.delete(v as object);
     return out;
   }
 

@@ -15,6 +15,34 @@ export function delegateToolTaskKindToWorkload(kind: DelegateToolTaskKind): Tool
 const MAX_GUIDANCE_KEY = 512;
 const MAX_CONSTRAINTS = 32_000;
 
+function requiresStrictOpenApiChain(userRequest: string): boolean {
+  const lower = userRequest.toLowerCase();
+  const hasLiteralChain =
+    lower.includes("openapi_search") &&
+    lower.includes("openapi_describe_operation") &&
+    lower.includes("cloudflare_request");
+
+  if (hasLiteralChain) return true;
+
+  const hasSearchDescribeCue =
+    /openapi\s+search\s*\/\s*describe/i.test(lower) ||
+    /search\s*\/\s*describe/i.test(lower) ||
+    (/openapi\s+search/i.test(lower) && /openapi\s+describe/i.test(lower));
+
+  const hasGetOnlyConstraint =
+    /then\s+call\s+only\s+get/i.test(lower) ||
+    /call\s+only\s+get/i.test(lower) ||
+    /only\s+get\s*\/accounts\/\{account_id\}\/gateway\/rules/i.test(lower);
+
+  const hasVerificationCue =
+    /describestatus/i.test(lower) ||
+    /describestatekeys/i.test(lower) ||
+    /invocationstoreid/i.test(lower) ||
+    /invocationstorepresent/i.test(lower);
+
+  return hasSearchDescribeCue && hasGetOnlyConstraint && hasVerificationCue;
+}
+
 /**
  * Builds the RPC body MainAgent sends to {@link ToolAgent} (workload lead line + guardrails + user text).
  */
@@ -23,8 +51,10 @@ export function formatDelegateToolAgentMessage(input: {
   taskKind: DelegateToolTaskKind;
   guidanceSkillKey?: string;
   constraints?: string;
-  /** When set, ToolAgent should use this account for Cloudflare API / codemode (do not ask the user for account id). */
-  cloudflareAccountId?: string;
+  /** Runtime account for AI Gateway / mirrored execution context only (not the user target API account). */
+  runtimeAccountId?: string;
+  /** Explicit target API account id extracted from user intent when available. */
+  targetAccountId?: string;
 }): string {
   const wk = delegateToolTaskKindToWorkload(input.taskKind);
   let skill = typeof input.guidanceSkillKey === "string" ? input.guidanceSkillKey.trim() : "";
@@ -36,19 +66,36 @@ export function formatDelegateToolAgentMessage(input: {
     constraints = `${constraints.slice(0, MAX_CONSTRAINTS)}…`;
   }
   const req = typeof input.userRequest === "string" ? input.userRequest.trim() : "";
-  const cfAcct =
-    typeof input.cloudflareAccountId === "string" ? input.cloudflareAccountId.trim() : "";
+  const strictOpenApiChain = requiresStrictOpenApiChain(req);
+  const runtimeAcct =
+    typeof input.runtimeAccountId === "string" ? input.runtimeAccountId.trim() : "";
+  const targetAcct =
+    typeof input.targetAccountId === "string" ? input.targetAccountId.trim() : "";
   const lines: string[] = [
     `[[edgeclaw:tool-task-kind=${wk}]]`,
     "",
     "**Delegation policy (must follow):** Do not deploy workloads, delete resources, cancel persisted scheduled tasks, mutate workflow definitions or runs, or change other durable orchestration state unless the **User request** section below **explicitly** asks for that outcome. Prefer read-only discovery and API calls unless the user clearly requested a write/mutation.",
     "",
   ];
-  if (cfAcct) {
+  if (runtimeAcct) {
     lines.push(
-      "**Cloudflare account (preset for MCP execute / codemode):**",
+      "**Cloudflare runtime account (AI Gateway / mirrored MCP execute context only):**",
       "",
-      `The mirrored MCP execute environment is already scoped to Cloudflare account id \`${cfAcct}\`. Use codemode \`openapi_search\` → \`openapi_describe_operation\` → \`cloudflare_request\` (or inner \`cloudflare.request\`) with \`/accounts/{account_id}/...\` paths — **do not** ask the user for an account id unless the user request explicitly concerns a different account.`,
+      `Runtime context account id: \`${runtimeAcct}\`.`,
+      "",
+      "Treat `CLOUDFLARE_ACCOUNT_ID` as runtime/AI-Gateway context only. For API calls, use the account id explicitly provided by the user request as the target account. Do not inject the runtime account as `account_id` for user API actions.",
+      ""
+    );
+  }
+  if (targetAcct) {
+    lines.push(
+      "**Target API account (from user request):**",
+      "",
+      `Use \`${targetAcct}\` as the target \`account_id\` for API operations.`,
+      "",
+      "When codemode/cloudflare_request uses knownValues, set `knownValues.account_id` to this target account id.",
+      "",
+      "The user already supplied the target account id; do not ask for account id again unless they ask to switch accounts.",
       ""
     );
   }
@@ -57,6 +104,15 @@ export function formatDelegateToolAgentMessage(input: {
   }
   if (constraints) {
     lines.push("**Constraints**", "", constraints, "");
+  }
+  if (strictOpenApiChain) {
+    lines.push(
+      "**OpenAPI chain contract (explicit user requirement):**",
+      "",
+      "Use this exact chain: `openapi_search` -> `openapi_describe_operation` -> `cloudflare_request`.",
+      "Do not substitute `tools_call_code` for this path unless fallback is explicitly requested, and always disclose fallback use in the final answer.",
+      ""
+    );
   }
   lines.push("---", "", "**User request**", "", req);
   return lines.join("\n");

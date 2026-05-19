@@ -23,6 +23,8 @@ async function getNamedAgentStub(namespace: unknown, name: string): Promise<unkn
 export function buildMcpLiveMirrorToolSet(options: {
   env: Env;
   parentAgentName: string;
+  delegatedTaskText?: string;
+  delegationCorrelationId?: string;
   descriptors: Record<string, McpMirrorToolDescriptor>;
 }): ToolSet {
   const out: Record<string, unknown> = {};
@@ -47,6 +49,8 @@ export function buildMcpLiveMirrorToolSet(options: {
       type RpcFn = (p: {
         toolName: string;
         input: unknown;
+        delegatedTaskText?: string;
+        delegationCorrelationId?: string;
       }) => Promise<{ ok: boolean; resultWire?: string; result?: unknown; error?: string }>;
       const typedStub = stub as { rpcExecuteDelegatedMcpTool?: RpcFn };
       if (typeof typedStub.rpcExecuteDelegatedMcpTool !== "function") {
@@ -77,7 +81,15 @@ export function buildMcpLiveMirrorToolSet(options: {
         );
       }
 
-      const rpcPayload = { toolName, input: wiredInput };
+      const delegatedTaskText =
+        typeof options.delegatedTaskText === "string" && options.delegatedTaskText.trim().length > 0
+          ? options.delegatedTaskText
+          : undefined;
+      const delegationCorrelationId =
+        typeof options.delegationCorrelationId === "string" && options.delegationCorrelationId.trim().length > 0
+          ? options.delegationCorrelationId.trim()
+          : undefined;
+      const rpcPayload = { toolName, input: wiredInput, delegatedTaskText, delegationCorrelationId };
       // Validate the payload is cloneable before handing it to the RPC stub.
       // If this fails, the error is non-retryable (argument structure is invalid).
       try {

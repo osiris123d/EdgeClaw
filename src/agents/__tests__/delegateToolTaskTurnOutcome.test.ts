@@ -84,3 +84,71 @@ test("computeDelegateToolTaskTurnLatchesAndReply: timeout token → terminal fai
   assert.ok(reply.includes("timed out"));
   assert.ok(reply.includes("120000"));
 });
+
+test("computeDelegateToolTaskTurnLatchesAndReply: ToolAgent envelope failure is surfaced with retry prompt", () => {
+  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+    taskKind: "mcp_api",
+    rpc: {
+      ok: false,
+      text: "",
+      toolAgentResult: {
+        ok: false,
+        failure: {
+          type: "missing_tool_input",
+          where: "tools_call",
+          summary: "Required MCP input missing",
+          evidence: "please specify account_id",
+          suggestedFix: "Provide account_id",
+          suggestedRetryPrompt: "Retry with explicit account_id.",
+        },
+        partialResultText: "Partial: discovered two candidate accounts.",
+      },
+    },
+  });
+  assert.equal(latches.delegationFailed, true);
+  assert.ok(reply.includes("Failure type: missing_tool_input"));
+  assert.ok(reply.includes("Where: tools_call"));
+  assert.ok(reply.includes("Retry prompt:"));
+  assert.ok(reply.includes("Partial findings:"));
+});
+
+test("computeDelegateToolTaskTurnLatchesAndReply: compact result with matchedCount injects visible reply when rpc text is empty", () => {
+  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+    taskKind: "mcp_api",
+    rpc: {
+      ok: true,
+      text: "",
+      toolAgentResult: {
+        ok: true,
+        scannedCount: 30,
+        matchedCount: 26,
+        matched: Array.from({ length: 2 }, (_, i) => ({ rule_id: `rule-${i + 1}` })),
+      },
+    },
+  });
+  assert.equal(latches.delegateOk, true);
+  assert.equal(latches.resultEmpty, false);
+  assert.ok(reply.includes("Matched 26 of 30 scanned item(s)."));
+  assert.ok(reply.includes("| rule id |"));
+});
+
+test("computeDelegateToolTaskTurnLatchesAndReply: compact matched rule_id/name renders table columns", () => {
+  const { reply } = computeDelegateToolTaskTurnLatchesAndReply({
+    taskKind: "mcp_api",
+    rpc: {
+      ok: true,
+      text: "",
+      toolAgentResult: {
+        ok: true,
+        scannedCount: 3,
+        matchedCount: 2,
+        matched: [
+          { rule_id: "r-1", name: "Allow A" },
+          { rule_id: "r-2", name: "Allow B" },
+        ],
+      },
+    },
+  });
+  assert.ok(reply.includes("| rule id | rule name |"));
+  assert.ok(reply.includes("Allow A"));
+});

@@ -7,7 +7,10 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import nodeTest from "node:test";
+import { fileURLToPath } from "node:url";
 import type { StepConfig } from "@cloudflare/think";
 import { computeDelegateToolTaskTurnLatchesAndReply, isLikelyToolAgentMcpBootstrapFailureMessage } from "../delegateToolTaskTurnOutcome";
 import {
@@ -16,6 +19,8 @@ import {
   mergeStepConfigFreezeToolsForDelegationTerminal,
 } from "../mainAgentDelegateToolGuards";
 import { buildDelegationToolAgentToolSurfaceFields } from "../mainAgentDelegationToolSurface";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const MCP_SYNC_FAILURE =
   "ToolAgent MCP restore failed: Failed to connect to MCP server at https://mcp.cloudflare.com/mcp: OAuth configuration incomplete: missing authUrl";
@@ -163,4 +168,59 @@ nodeTest("MCP bootstrap delegate failure reply is not a success template (stable
     );
   }
   assert.ok(reply.includes("MCP bootstrap") || reply.includes("MCP restore"));
+});
+
+nodeTest("integration-style delegated ToolAgent failure visibility: envelope content + maxSteps=1 finalize wiring", () => {
+  const { latches, reply } = computeDelegateToolTaskTurnLatchesAndReply({
+    taskKind: "tool_orchestration",
+    rpc: {
+      ok: false,
+      text: "",
+      toolAgentResult: {
+        ok: false,
+        failure: {
+          type: "too_much_data",
+          where: "tools_call",
+          summary: "ToolAgent response exceeded useful output limits and ended before final synthesis.",
+          evidence: "TRUNCATED: Response was ~135000 tokens and hit output limit.",
+          suggestedFix: "Narrow scope and request a compact summary with essential fields only.",
+          suggestedRetryPrompt:
+            "Retry delegated tool task. Keep objective unchanged, but fetch in pages and return concise summarized results only.",
+        },
+        partialResultText: "Partial findings: identified 12 candidate items and top 3 high-priority anomalies.",
+      },
+    },
+  });
+
+  assert.equal(latches.delegationTerminal, true);
+  assert.equal(latches.delegationFailed, true);
+
+  // Clear failure heading/body
+  assert.ok(reply.startsWith("[delegate_tool_task] failed:"));
+  assert.ok(reply.includes("ToolAgent could not complete the delegated task"));
+
+  // Failure type or plain-language reason
+  assert.ok(
+    reply.includes("Failure type: too_much_data") ||
+      /exceeded useful output limits|too much data|truncated/i.test(reply),
+    "failure type or plain-language reason should be present"
+  );
+
+  // Required failure detail fields
+  assert.ok(reply.includes("Where: tools_call"));
+  assert.ok(reply.includes("Evidence: TRUNCATED:"));
+  assert.ok(reply.includes("What to do next: Narrow scope"));
+  assert.ok(reply.includes("Retry prompt:"));
+  assert.ok(reply.includes("Retry delegated tool task."));
+  assert.ok(reply.includes("Partial findings:"));
+  assert.ok(reply.includes("identified 12 candidate items"));
+
+  // maxSteps=1 / no-terminal-step finalize path wiring in MainAgent:
+  // failure text is appended as a visible assistant message when result.message has no text.
+  const mainSrc = readFileSync(join(here, "..", "MainAgent.ts"), "utf8");
+  assert.match(mainSrc, /maybeInjectDelegateToolTaskFailureAssistantMessage/);
+  assert.match(mainSrc, /await this\.maybeInjectDelegateToolTaskFailureAssistantMessage\(result\)/);
+  assert.match(mainSrc, /if \(!this\._turnToolAgentDelegationFailed \|\| replyText\.length === 0\)/);
+  assert.match(mainSrc, /existingText\.length > 0/);
+  assert.match(mainSrc, /session\.appendMessage\(msg\)/);
 });
