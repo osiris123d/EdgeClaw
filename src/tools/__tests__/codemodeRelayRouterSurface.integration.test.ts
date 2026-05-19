@@ -1722,6 +1722,133 @@ test("cloudflare_request accepts reduction fields (value/perPage/caseInsensitive
   });
 });
 
+test("cloudflare_request filterByPrefix defaults and explicit booleans are generic", async () => {
+  const makeMeta = () => {
+    const relay: ToolSet = {
+      tool_search: tool({
+        description: "OpenAPI MCP search stub",
+        inputSchema: z.object({ code: z.string() }),
+        execute: async () => ({ ok: true }),
+      }),
+      tool_execute: tool({
+        description: "Execute stub",
+        inputSchema: z.object({ code: z.string() }),
+        execute: async (input: unknown) => {
+          const code =
+            typeof input === "object" && input && "code" in input
+              ? String((input as { code?: unknown }).code)
+              : "";
+          if (code.includes("EDGECLAW_OPENAPI_DESCRIBE")) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ ok: true, operation: { parameters: [] } }),
+                },
+              ],
+            };
+          }
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  success: true,
+                  result: [
+                    { id: "a", name: " FooBar" },
+                    { id: "b", name: "foobar" },
+                    { id: "c", name: "barfoo" },
+                  ],
+                }),
+              },
+            ],
+          };
+        },
+      }),
+    };
+
+    return createCodemodeRelayMetaToolSet({ relay, cloudflareAccountId: "acct" });
+  };
+
+  const runCase = async (filterByPrefix: {
+    field: string;
+    value: string;
+    trim?: boolean;
+    caseInsensitive?: boolean;
+  }) => {
+    const meta = makeMeta();
+    return runCodemodeRouterInvocation(async () => {
+      await execTool(meta, "openapi_search", { tag: "__edgeclaw__" });
+      await execTool(meta, "openapi_describe_operation", {
+        method: "GET",
+        path: "/arbitrary/resources",
+      });
+      return (await execTool(meta, "cloudflare_request", {
+        method: "GET",
+        path: "/arbitrary/resources",
+        reduction: {
+          select: ["id", "name"],
+          filterByPrefix,
+          compactResultCap: 50,
+        },
+      })) as {
+        ok?: boolean;
+        matchedCount?: number;
+        matched?: Array<Record<string, unknown>>;
+      };
+    });
+  };
+
+  const defaultTrim = await runCase({ field: "name", value: "foo" });
+  assert.equal(defaultTrim.ok, true, JSON.stringify(defaultTrim));
+  assert.equal(defaultTrim.matchedCount, 2);
+  assert.deepEqual(
+    (defaultTrim.matched ?? []).map((row) => row.id),
+    ["a", "b"]
+  );
+
+  const defaultCaseInsensitive = await runCase({ field: "name", value: "Foo" });
+  assert.equal(defaultCaseInsensitive.ok, true, JSON.stringify(defaultCaseInsensitive));
+  assert.equal(defaultCaseInsensitive.matchedCount, 2);
+  assert.deepEqual(
+    (defaultCaseInsensitive.matched ?? []).map((row) => row.id),
+    ["a", "b"]
+  );
+
+  const trimDisabled = await runCase({ field: "name", value: "Foo", trim: false });
+  assert.equal(trimDisabled.ok, true, JSON.stringify(trimDisabled));
+  assert.equal(trimDisabled.matchedCount, 1);
+  assert.deepEqual(
+    (trimDisabled.matched ?? []).map((row) => row.id),
+    ["b"]
+  );
+
+  const caseInsensitiveDisabled = await runCase({
+    field: "name",
+    value: "Foo",
+    caseInsensitive: false,
+  });
+  assert.equal(caseInsensitiveDisabled.ok, true, JSON.stringify(caseInsensitiveDisabled));
+  assert.equal(caseInsensitiveDisabled.matchedCount, 1);
+  assert.deepEqual(
+    (caseInsensitiveDisabled.matched ?? []).map((row) => row.id),
+    ["a"]
+  );
+
+  const explicitTrueFalseRespected = await runCase({
+    field: "name",
+    value: "foo",
+    trim: true,
+    caseInsensitive: false,
+  });
+  assert.equal(explicitTrueFalseRespected.ok, true, JSON.stringify(explicitTrueFalseRespected));
+  assert.equal(explicitTrueFalseRespected.matchedCount, 1);
+  assert.deepEqual(
+    (explicitTrueFalseRespected.matched ?? []).map((row) => row.id),
+    ["b"]
+  );
+});
+
 test("cloudflare_request helper failure remains ok:false (not converted to scannedCount:0)", async () => {
   const relay: ToolSet = {
     tool_search: tool({

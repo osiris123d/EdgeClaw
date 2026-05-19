@@ -71,6 +71,41 @@ test("buildCloudflareRequestInnerCode serializes GET path into inner cloudflare.
   assert.ok(code.includes("/accounts/acct/dex/tests/overview"));
 });
 
+test("buildCloudflareRequestInnerCode filterByPrefix defaults trim and caseInsensitive to true", async () => {
+  const code = buildCloudflareRequestInnerCode({
+    method: "GET",
+    path: "/arbitrary/resources",
+    reduction: {
+      select: ["name"],
+      filterByPrefix: {
+        field: "name",
+        value: "foo",
+      },
+      compactResultCap: 50,
+    },
+  });
+
+  const runInner = new Function(
+    "cloudflare",
+    `return (${code})();`
+  ) as (cloudflare: { request: () => Promise<unknown> }) => Promise<{
+    items: Array<Record<string, unknown>>;
+    scannedCount: number;
+    matchedCount: number;
+  }>;
+
+  const out = await runInner({
+    request: async () => ({
+      success: true,
+      result: [{ name: " FooBar" }, { name: "nope" }],
+    }),
+  });
+
+  assert.equal(out.scannedCount, 2);
+  assert.equal(out.matchedCount, 1);
+  assert.equal(out.items[0]?.name, " FooBar");
+});
+
 test("injectAccountIntoApiPath replaces {account_id}", () => {
   assert.equal(injectAccountIntoApiPath("/accounts/{account_id}/dex/x", "aid"), "/accounts/aid/dex/x");
 });

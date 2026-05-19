@@ -1361,9 +1361,11 @@ function reducePageItems(args: {
     if (prefix && typeof prefixValue === "string") {
       const rawField = normalized[prefix.field];
       if (typeof rawField !== "string") continue;
-      const source = prefix.trim ? rawField.trim() : rawField;
-      const lhs = prefix.caseInsensitive ? source.toLowerCase() : source;
-      const rhs = prefix.caseInsensitive ? prefixValue.toLowerCase() : prefixValue;
+      const useTrim = prefix.trim !== false;
+      const useCaseInsensitive = prefix.caseInsensitive !== false;
+      const source = useTrim ? rawField.trim() : rawField;
+      const lhs = useCaseInsensitive ? source.toLowerCase() : source;
+      const rhs = useCaseInsensitive ? prefixValue.toLowerCase() : prefixValue;
       if (!lhs.startsWith(rhs)) continue;
     }
 

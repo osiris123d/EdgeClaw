@@ -1035,6 +1035,43 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
         let matchedCount = successAware.matchedCount;
         const matched = successAware.matched;
 
+        // ── LLM final assistant preference ─────────────────────────────────────
+        // When the LLM produced a substantive final assistant response (inner.text)
+        // that is NOT raw JSON, prefer it over the raw tool result extraction.
+        // This ensures that even when extractCompactReducedPayload cannot recognize
+        // the result shape, the LLM's human-readable interpretation is surfaced.
+        const hasCompactFormattedResult =
+          typeof scannedCount === "number" &&
+          typeof matchedCount === "number" &&
+          Array.isArray(matched);
+        const innerText = (inner.text ?? "").trim();
+        const innerTextLooksHuman =
+          innerText.length > 20 &&
+          /[A-Za-z]/.test(innerText) &&
+          !innerText.startsWith("{") &&
+          !innerText.startsWith("[") &&
+          !innerText.includes('"tool_call_id"') &&
+          !innerText.includes('"functions.codemode"') &&
+          !innerText.includes('"code":"async');
+        const extractedLooksRaw =
+          typeof finalResultText === "string" &&
+          (finalResultText.includes('"code":"async') ||
+            finalResultText.includes('"logs":[]') ||
+            finalResultText.includes("functions.codemode"));
+        if (
+          !hasCompactFormattedResult &&
+          innerTextLooksHuman &&
+          extractedLooksRaw &&
+          finalResultText !== innerText
+        ) {
+          console.warn(
+            `[EdgeClaw][tool-agent] preferring LLM final assistant text over raw extracted result (tight guard) ` +
+              `(innerTextLen=${innerText.length} extractedLen=${finalResultText?.length ?? 0}) ` +
+              `requestId=${this.requestId}`
+          );
+          finalResultText = innerText;
+        }
+
         const hasCompactReducedTerminalData =
           typeof scannedCount === "number" &&
           typeof matchedCount === "number" &&

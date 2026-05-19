@@ -255,9 +255,11 @@ export function buildCloudflareRequestInnerCode(options: {
     if (pfx && pfxVal) {
       let fv = it[pfx.field];
       if (typeof fv !== "string") continue;
-      if (pfx.trim) fv = fv.trim();
-      const lhs = pfx.caseInsensitive ? fv.toLowerCase() : fv;
-      const rhs = pfx.caseInsensitive ? pfxVal.toLowerCase() : pfxVal;
+      const useTrim = pfx.trim !== false;
+      const useCaseInsensitive = pfx.caseInsensitive !== false;
+      if (useTrim) fv = fv.trim();
+      const lhs = useCaseInsensitive ? fv.toLowerCase() : fv;
+      const rhs = useCaseInsensitive ? pfxVal.toLowerCase() : pfxVal;
       if (!lhs.startsWith(rhs)) continue;
     }
     const row = {};
