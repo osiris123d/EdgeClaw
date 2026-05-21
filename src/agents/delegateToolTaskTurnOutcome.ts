@@ -5,6 +5,7 @@
 
 import { TOOL_AGENT_MCP_RESTORE_FAILED_PREFIX } from "../lib/mcpRestoreFromPersisted";
 import type { SubAgentResult, ToolAgentResultEnvelope } from "./delegation";
+import { synthesizeDelegationVisibleAssistantText } from "./delegationFinalResponseGuard";
 import { formatToolAgentFailureAssistantMessage } from "./toolAgentResultEnvelope";
 import { formatCompactMatchedResultText } from "./toolAgentSuccessAwareFinalization";
 
@@ -168,6 +169,14 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
       f?.type === "missing_tool_input" &&
       typeof f.evidence === "string" &&
       isLikelyToolAgentMcpBootstrapFailureMessage(f.evidence);
+    const failureReply = formatToolAgentFailureAssistantMessage(rpc.toolAgentResult);
+    const visibleReply = synthesizeDelegationVisibleAssistantText({
+      llmText: rpc.text,
+      preferredText: failureReply,
+      toolAgentResult: rpc.toolAgentResult,
+      errorText: rpc.error,
+      attempted: `delegated ${taskKind} task`,
+    });
     return {
       latches: {
         delegationTerminal: stop,
@@ -178,7 +187,7 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
           bootstrap && f?.evidence ? sanitizeToolAgentBootstrapTelemetryError(f.evidence) : "",
         resultEmpty: false,
       },
-      reply: formatToolAgentFailureAssistantMessage(rpc.toolAgentResult),
+      reply: visibleReply,
     };
   }
 
@@ -227,6 +236,14 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
         reply: formatDelegateToolTaskFakeToolMarkupFailureReply(),
       };
     }
+    visibleReply = synthesizeDelegationVisibleAssistantText({
+      llmText: rpc.text,
+      preferredText: visibleReply,
+      toolAgentResult: rpc.toolAgentResult,
+      errorText: rpc.error,
+      attempted: `delegated ${taskKind} task`,
+    });
+
     return {
       latches: {
         delegationTerminal: true,
@@ -236,7 +253,7 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
         bootstrapError: "",
         resultEmpty: visibleReply.length === 0,
       },
-      reply: visibleReply || "[delegate_tool_task] Done (empty reply).",
+      reply: visibleReply,
     };
   }
 
@@ -245,6 +262,17 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
   if (timeoutMsMatch) {
     const ms = timeoutMsMatch[1]!;
     const stop = delegateToolTaskFailureShouldHardStopOrchestration(taskKind);
+    const timeoutReply = formatDelegateToolTaskGenericFailureReply(
+      `ToolAgent delegation timed out after ${ms}ms (MainAgent stopped waiting). ` +
+        `The ToolAgent durable object may still finish in the background — retry with a narrower task if needed.`
+    );
+    const visibleReply = synthesizeDelegationVisibleAssistantText({
+      llmText: rpc.text,
+      preferredText: timeoutReply,
+      toolAgentResult: rpc.toolAgentResult,
+      errorText: rpc.error,
+      attempted: `delegated ${taskKind} task`,
+    });
     return {
       latches: {
         delegationTerminal: stop,
@@ -254,10 +282,7 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
         bootstrapError: "",
         resultEmpty: false,
       },
-      reply: formatDelegateToolTaskGenericFailureReply(
-        `ToolAgent delegation timed out after ${ms}ms (MainAgent stopped waiting). ` +
-          `The ToolAgent durable object may still finish in the background — retry with a narrower task if needed.`
-      ),
+      reply: visibleReply,
     };
   }
 
@@ -268,6 +293,17 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
   const bootstrapDetail = rawErr || combinedDetail;
   const bootstrap = isLikelyToolAgentMcpBootstrapFailureMessage(bootstrapDetail);
 
+  const fallbackReply = bootstrap
+    ? formatDelegateToolTaskMcpBootstrapFailureReply(bootstrapDetail)
+    : formatDelegateToolTaskGenericFailureReply(combinedDetail);
+  const visibleReply = synthesizeDelegationVisibleAssistantText({
+    llmText: rpc.text,
+    preferredText: fallbackReply,
+    toolAgentResult: rpc.toolAgentResult,
+    errorText: rpc.error,
+    attempted: `delegated ${taskKind} task`,
+  });
+
   return {
     latches: {
       delegationTerminal: stop,
@@ -277,8 +313,6 @@ export function computeDelegateToolTaskTurnLatchesAndReply(args: {
       bootstrapError: bootstrap ? sanitizeToolAgentBootstrapTelemetryError(bootstrapDetail) : "",
       resultEmpty: false,
     },
-    reply: bootstrap
-      ? formatDelegateToolTaskMcpBootstrapFailureReply(bootstrapDetail)
-      : formatDelegateToolTaskGenericFailureReply(combinedDetail),
+    reply: visibleReply,
   };
 }

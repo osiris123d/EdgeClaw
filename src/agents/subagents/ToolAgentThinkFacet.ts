@@ -32,6 +32,7 @@ import {
 } from "../../lib/mcpRestoreFromPersisted";
 import { configureEdgeClawMcpOAuthPopupClose } from "../../lib/mcpOAuthPopupHandler";
 import { clampSubAgentResultForRpc, type SubAgentResult } from "../delegation";
+import { synthesizeDelegationVisibleAssistantText } from "../delegationFinalResponseGuard";
 import type { AgentTurnContext } from "../agentTurnContext";
 import { deriveMainAgentCodemodeCompressionTurn } from "../mainAgentCodemodeCompressionTurn";
 import { resolveCodemodeToolSurfaceCompression } from "../../tools/codemodeToolSurfaceResolve";
@@ -1110,10 +1111,18 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
           matched,
         });
 
+        const visibleText = synthesizeDelegationVisibleAssistantText({
+          llmText: inner.text,
+          preferredText: finalResultText || toolSynthesisText,
+          toolAgentResult,
+          errorText: inner.error,
+          attempted: "tool orchestration in delegated ToolAgent turn",
+        });
+
         return clampSubAgentResultForRpc({
           ...inner,
           ok: true,
-          text: finalResultText || toolSynthesisText,
+          text: visibleText,
           toolAgentResult,
         });
       }
@@ -1303,8 +1312,21 @@ export class ToolAgentThinkFacet extends BaseSubAgentThink {
         });
       }
 
+      const visibleText = synthesizeDelegationVisibleAssistantText({
+        llmText: inner.text,
+        preferredText:
+          (typeof toolAgentResult?.resultText === "string" && toolAgentResult.resultText.trim()) ||
+          toolSynthesisText ||
+          inner.text ||
+          "",
+        toolAgentResult,
+        errorText: inner.error,
+        attempted: "tool orchestration in delegated ToolAgent turn",
+      });
+
       const result = clampSubAgentResultForRpc({
         ...inner,
+        text: visibleText,
         toolAgentResult,
       });
       console.warn(JSON.stringify({
